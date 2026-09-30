@@ -427,3 +427,67 @@ describe("requireEnvironment", () => {
     expect(error.message).toContain("B, C");
   });
 });
+
+// ---------------------------------------------------------------- viteShutdownPlugin
+
+import { viteShutdownPlugin } from "../src/index";
+
+function fakeProcess() {
+  const handlers = new Map<string, () => void>();
+  const exits: number[] = [];
+  return {
+    process: {
+      on(signal: string, handler: () => void) {
+        handlers.set(signal, handler);
+      },
+      off(signal: string) {
+        handlers.delete(signal);
+      },
+      exit(code: number) {
+        exits.push(code);
+      },
+    },
+    handlers,
+    exits,
+  };
+}
+
+test("viteShutdownPlugin closes every connection, bounds close() and exits 0 on SIGTERM", async () => {
+  const fake = fakeProcess();
+  let closedConnections = 0;
+  let closeCalls = 0;
+  const server = {
+    httpServer: {
+      closeAllConnections: () => {
+        closedConnections += 1;
+      },
+    },
+    close: () => {
+      closeCalls += 1;
+      return new Promise<void>(() => {}); // never resolves: a hung close
+    },
+  };
+  const plugin = viteShutdownPlugin({
+    closeTimeoutMs: 20,
+    shutdown: { process: fake.process as never },
+  });
+  plugin.configureServer(server);
+  fake.handlers.get("SIGTERM")?.();
+  await new Promise((resolve) => setTimeout(resolve, 60));
+  expect(closedConnections).toBe(1);
+  expect(closeCalls).toBe(1);
+  expect(fake.exits).toEqual([0]);
+});
+
+test("viteShutdownPlugin exits 0 as soon as close() resolves", async () => {
+  const fake = fakeProcess();
+  const server = { close: async () => {} };
+  const plugin = viteShutdownPlugin({
+    closeTimeoutMs: 1_000,
+    shutdown: { process: fake.process as never },
+  });
+  plugin.configurePreviewServer(server);
+  fake.handlers.get("SIGINT")?.();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  expect(fake.exits).toEqual([0]);
+});

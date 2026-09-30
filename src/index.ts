@@ -283,6 +283,44 @@ export function onShutdown(
   };
 }
 
+// ---------------------------------------------------------------- dev servers
+
+/** The subset of a Vite dev/preview server the shutdown plugin needs. */
+export interface ClosableDevServer {
+  httpServer?: { closeAllConnections?: () => void } | null;
+  close(): Promise<void>;
+}
+
+/** Vite plugin: a requested stop (SIGTERM/SIGINT) closes the dev or preview
+ * server and exits 0 (Lazurio Module Standard 4.4). Vite's own handler would
+ * report 128 + signal, and an open keep-alive connection can hold `close()`
+ * for longer than a Launchpad waits; every connection is closed first and
+ * `close()` is bounded by `closeTimeoutMs`. Use in `vite.config.ts`:
+ * `plugins: [react(), viteShutdownPlugin()]`. */
+export function viteShutdownPlugin(
+  options: { closeTimeoutMs?: number; shutdown?: ShutdownOptions } = {},
+): {
+  name: string;
+  configureServer: (server: ClosableDevServer) => void;
+  configurePreviewServer: (server: ClosableDevServer) => void;
+} {
+  const closeTimeoutMs = options.closeTimeoutMs ?? 2_000;
+  const attach = (server: ClosableDevServer) => {
+    onShutdown(async () => {
+      server.httpServer?.closeAllConnections?.();
+      await Promise.race([
+        server.close(),
+        new Promise<void>((resolve) => setTimeout(resolve, closeTimeoutMs)),
+      ]);
+    }, options.shutdown ?? {});
+  };
+  return {
+    name: "lazurio-module-kit-shutdown",
+    configureServer: attach,
+    configurePreviewServer: attach,
+  };
+}
+
 /** Values of required variables; throws `environment-missing` naming every
  * absent or empty one. */
 export function requireEnvironment<const Name extends string>(

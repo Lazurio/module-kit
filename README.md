@@ -12,7 +12,7 @@ beyond that belongs in the Module itself.
 ## Install
 
 ```sh
-bun add github:Lazurio/module-kit#v0.1.0
+bun add github:Lazurio/module-kit#v0.2.0
 ```
 
 The package ships TypeScript sources (`exports` and `types` point at
@@ -53,6 +53,7 @@ try {
 | `listeners(env)` | every listener as `{ id, host, port, externalOrigin }`, from `LAZURIO_RUNTIME_LISTENERS_JSON` when present, else derived from `LAZURIO_RUNTIME_LISTENER_*`; a malformed JSON value throws `listeners-invalid` |
 | `runtimeIdentity(env)` | `{ schemaVersion, appId, entrypointId }` from `LAZURIO_RUNTIME_SCHEMA_VERSION`, `_APP_ID` and `_ENTRYPOINT_ID`, or `null` |
 | `allowedHosts(id, env)` | the external origin's hostname (if any) plus `localhost`, `127.0.0.1` and `::1`; never a wildcard |
+| `viteShutdownPlugin({ closeTimeoutMs = 2000 })` | Vite plugin: SIGTERM/SIGINT closes every connection, bounds `server.close()` and exits 0 (Vite alone reports 128 + signal and an open keep-alive connection can hold `close()`); use in `vite.config.ts` `plugins` for dev and preview |
 | `viteServerOptions(id, env)` | `{ host, port, strictPort: true, allowedHosts }` for Vite `server` |
 | `astroServerOptions(id, env)` | `{ host, port, allowedHosts }` for Astro `server` |
 | `health(ready)` | `(req) => Promise<Response>`: 200 `{"status":"ok"}` when `ready()` is true, else (or when it throws) 503 `{"status":"starting"}` |
