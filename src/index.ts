@@ -338,3 +338,89 @@ export function requireEnvironment<const Name extends string>(
     string
   >;
 }
+
+/** Who is signed in to Lazurio for one incoming request, or why that is
+ * unavailable. Read-only identity for display and the Module's own rules:
+ * never a role, a grant, a key to data or a signature. */
+export type SignedInPerson =
+  | Readonly<{
+      status: "signed-in";
+      /** The Lazurio account's subject, a lowercase UUID: stable for the
+       * account, the key to remember a person by. */
+      subject: string;
+      /** The person's Lazurio username, to show; null when the gateway's
+       * answer named none. */
+      username: string | null;
+    }>
+  | Readonly<{
+      status: "unavailable";
+      /** `not-hosted`: no gateway in front of this listener (a person's
+       * computer, or an Environment without one), so no request names
+       * anyone. `not-through-gateway`: the request's `Host` is not the
+       * listener's external origin (a sibling, a script on the Environment).
+       * `no-person`: the gateway named nobody (the Environment browser's
+       * local entry, a gateway without this capability). */
+      reason: "not-hosted" | "not-through-gateway" | "no-person";
+    }>;
+
+/** What `signedInPerson` reads of a request: a `Request` or its headers. */
+export type RequestHeaders = Readonly<{ get(name: string): string | null }>;
+
+/** The headers the Environment's gateway sets after it admits a request
+ * (Lazurio Module Standard, "Who is signed in"). */
+export const SIGNED_IN_SUBJECT_HEADER = "x-auth-request-user";
+export const SIGNED_IN_USERNAME_HEADER = "x-auth-request-preferred-username";
+
+const SUBJECT =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UUID_ANY_CASE = new RegExp(SUBJECT.source, "i");
+
+/** A Lazurio username: 3 to 39 lowercase letters and digits with single
+ * dashes between them, never shaped like a UUID and never a service
+ * account's (`service-account-…`). */
+export function isLazurioUsername(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length >= 3 &&
+    value.length <= 39 &&
+    /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) &&
+    !UUID_ANY_CASE.test(value) &&
+    !value.startsWith("service-account-")
+  );
+}
+
+/** Who is signed in to Lazurio for this request, read from the headers the
+ * Environment's gateway sets from its own admission answer.
+ *
+ * The headers count only behind the gateway: when the listener has an
+ * external origin (`LAZURIO_RUNTIME_LISTENER_<ID>_EXTERNAL_ORIGIN`, a hosted
+ * entrypoint) and the request's `Host` is that origin's host. Everywhere
+ * else the result is `unavailable` whatever the request carries, because
+ * there a header could come from anyone. The gateway removes every client
+ * copy and admits every request again, so read it per request and never
+ * cache it: after another account signs in, the next request names the new
+ * person, and an expired session never reaches the Module. A repeated header
+ * or a value of another form reads as nobody. Throws `listener-missing` like
+ * `listener(id)`. */
+export function signedInPerson(
+  request: Request | RequestHeaders,
+  id = "app",
+  env: Environment = process.env,
+): SignedInPerson {
+  const { externalOrigin } = listener(id, env);
+  if (externalOrigin === null)
+    return { status: "unavailable", reason: "not-hosted" };
+  const headers: RequestHeaders =
+    "headers" in request ? request.headers : request;
+  if (headers.get("host") !== new URL(externalOrigin).host)
+    return { status: "unavailable", reason: "not-through-gateway" };
+  const subject = headers.get(SIGNED_IN_SUBJECT_HEADER);
+  if (subject === null || !SUBJECT.test(subject))
+    return { status: "unavailable", reason: "no-person" };
+  const username = headers.get(SIGNED_IN_USERNAME_HEADER);
+  return {
+    status: "signed-in",
+    subject,
+    username: isLazurioUsername(username) ? username : null,
+  };
+}

@@ -7,9 +7,12 @@ from lazurio_module_kit import (
     HealthResponse,
     Listener,
     ModuleKitError,
+    SignedIn,
+    Unavailable,
     health,
     listener,
     listener_variable_key,
+    signed_in_person,
 )
 
 APP = {
@@ -101,3 +104,40 @@ def test_health_raising_is_starting() -> None:
         raise RuntimeError("db down")
 
     assert _run(broken).status == 503
+
+
+HOST = "deals.vm-01.example.lazurio.io"
+HOSTED = {**APP, "LAZURIO_RUNTIME_LISTENER_APP_EXTERNAL_ORIGIN": f"https://{HOST}"}
+ALENA = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+
+
+def test_signed_in_behind_the_gateway() -> None:
+    headers = {"Host": HOST, "X-Auth-Request-User": ALENA, "X-Auth-Request-Preferred-Username": "alena"}
+    assert signed_in_person(headers, "app", HOSTED) == SignedIn(ALENA, "alena")
+
+
+def test_not_hosted_ignores_every_header() -> None:
+    headers = {"host": "127.0.0.1:43100", "x-auth-request-user": ALENA}
+    assert signed_in_person(headers, "app", APP) == Unavailable("not-hosted")
+
+
+def test_not_through_the_gateway() -> None:
+    headers = {"host": "127.0.0.1:43100", "x-auth-request-user": ALENA}
+    assert signed_in_person(headers, "app", HOSTED) == Unavailable("not-through-gateway")
+
+
+@pytest.mark.parametrize("subject", [None, "", ALENA.upper(), ALENA + "0", "alena"])
+def test_no_person(subject: str | None) -> None:
+    headers = {"host": HOST} if subject is None else {"host": HOST, "x-auth-request-user": subject}
+    assert signed_in_person(headers, "app", HOSTED) == Unavailable("no-person")
+
+
+def test_repeated_subject_is_nobody() -> None:
+    headers = {"host": HOST, "x-auth-request-user": ALENA, "X-Auth-Request-User": ALENA}
+    assert signed_in_person(headers, "app", HOSTED) == Unavailable("no-person")
+
+
+@pytest.mark.parametrize("username", ["Alena", "al", "a" * 40, "-alena", ALENA, "service-account-pilot"])
+def test_invalid_username_is_none(username: str) -> None:
+    headers = {"host": HOST, "x-auth-request-user": ALENA, "x-auth-request-preferred-username": username}
+    assert signed_in_person(headers, "app", HOSTED) == SignedIn(ALENA, None)

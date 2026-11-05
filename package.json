@@ -1,7 +1,7 @@
 {
   "name": "@lazurio/module-kit",
-  "version": "0.2.0",
-  "description": "Lazurio Module Standard runtime helpers: listener, health, shutdown",
+  "version": "0.3.0",
+  "description": "Lazurio Module Standard runtime helpers: listener, health, shutdown, signed-in person",
   "license": "MIT",
   "type": "module",
   "packageManager": "bun@1.4.2",

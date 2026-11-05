@@ -17,12 +17,18 @@ from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
 
 __all__ = [
+    "SIGNED_IN_SUBJECT_HEADER",
+    "SIGNED_IN_USERNAME_HEADER",
     "HealthResponse",
     "Listener",
     "ModuleKitError",
+    "SignedIn",
+    "Unavailable",
     "health",
+    "is_lazurio_username",
     "listener",
     "listener_variable_key",
+    "signed_in_person",
 ]
 
 ErrorCode = Literal["listener-missing", "listeners-invalid", "environment-missing"]
@@ -127,3 +133,71 @@ def health(ready: Ready) -> Callable[[], Awaitable[HealthResponse]]:
         return HealthResponse(200 if ok else 503, body, "application/json")
 
     return check
+
+
+SIGNED_IN_SUBJECT_HEADER = "x-auth-request-user"
+SIGNED_IN_USERNAME_HEADER = "x-auth-request-preferred-username"
+_SUBJECT = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+@dataclass(frozen=True)
+class SignedIn:
+    """The person signed in to Lazurio for one request: the account's subject
+    (a lowercase UUID, the key to remember them by) and the Lazurio username
+    to show, or ``None``. Read-only identity, never a role, a grant, a key to
+    data or a signature."""
+
+    subject: str
+    username: str | None
+    status: Literal["signed-in"] = "signed-in"
+
+
+@dataclass(frozen=True)
+class Unavailable:
+    """Why nobody is named: ``not-hosted`` (no gateway in front of this
+    listener), ``not-through-gateway`` (the request's Host is not the
+    listener's external origin) or ``no-person`` (the gateway named nobody)."""
+
+    reason: Literal["not-hosted", "not-through-gateway", "no-person"]
+    status: Literal["unavailable"] = "unavailable"
+
+
+def is_lazurio_username(value: object) -> bool:
+    """3 to 39 lowercase letters and digits with single dashes between them,
+    never shaped like a UUID and never a service account's."""
+    return (
+        isinstance(value, str)
+        and 3 <= len(value) <= 39
+        and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value) is not None
+        and _SUBJECT.fullmatch(value.lower()) is None
+        and not value.startswith("service-account-")
+    )
+
+
+def _header(headers: Mapping[str, str], name: str) -> str | None:
+    """One header, matched case-insensitively; a repeated one reads as none."""
+    values = [value for key, value in headers.items() if key.lower() == name]
+    return values[0] if len(values) == 1 else None
+
+
+def signed_in_person(
+    headers: Mapping[str, str],
+    listener_id: str = "app",
+    env: Mapping[str, str] | None = None,
+) -> SignedIn | Unavailable:
+    """Who is signed in to Lazurio for this request, from the headers the
+    Environment's gateway sets from its own admission answer; the same rules
+    as ``signedInPerson`` of the TypeScript package. The headers count only
+    when the listener has an external origin and the request's Host is that
+    origin's host. Read it per request, never cache it. Raises
+    ``listener-missing`` like ``listener``."""
+    origin = listener(listener_id, env).external_origin
+    if origin is None:
+        return Unavailable("not-hosted")
+    if _header(headers, "host") != urlsplit(origin).netloc:
+        return Unavailable("not-through-gateway")
+    subject = _header(headers, SIGNED_IN_SUBJECT_HEADER)
+    if subject is None or _SUBJECT.fullmatch(subject) is None:
+        return Unavailable("no-person")
+    username = _header(headers, SIGNED_IN_USERNAME_HEADER)
+    return SignedIn(subject, username if is_lazurio_username(username) else None)

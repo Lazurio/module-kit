@@ -4,6 +4,7 @@ import {
   allowedHosts,
   astroServerOptions,
   health,
+  isLazurioUsername,
   listener,
   listeners,
   listenerVariableKey,
@@ -12,6 +13,7 @@ import {
   requireEnvironment,
   runtimeIdentity,
   type ShutdownProcess,
+  signedInPerson,
   viteServerOptions,
   withHealth,
 } from "../src/index.ts";
@@ -490,4 +492,122 @@ test("viteShutdownPlugin exits 0 as soon as close() resolves", async () => {
   fake.handlers.get("SIGINT")?.();
   await new Promise((resolve) => setTimeout(resolve, 20));
   expect(fake.exits).toEqual([0]);
+});
+
+describe("signedInPerson", () => {
+  const HOST = "deals.vm-01.example.lazurio.io";
+  const ALENA = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+  const through = (extra: Record<string, string> = {}) =>
+    new Request(`https://${HOST}/api/me`, {
+      headers: { host: HOST, ...extra },
+    });
+
+  test("behind the gateway: the subject and username it set", () => {
+    expect(
+      signedInPerson(
+        through({
+          "X-Auth-Request-User": ALENA,
+          "X-Auth-Request-Preferred-Username": "alena",
+        }),
+        "app",
+        HOSTED,
+      ),
+    ).toEqual({ status: "signed-in", subject: ALENA, username: "alena" });
+  });
+
+  test("reads plain headers too (any server)", () => {
+    const headers = new Headers({ host: HOST, "x-auth-request-user": ALENA });
+    expect(signedInPerson(headers, "app", HOSTED)).toEqual({
+      status: "signed-in",
+      subject: ALENA,
+      username: null,
+    });
+  });
+
+  test("without a gateway no header names anyone", () => {
+    const forged = new Request("http://127.0.0.1:43100/", {
+      headers: {
+        host: "127.0.0.1:43100",
+        "x-auth-request-user": ALENA,
+        "x-auth-request-preferred-username": "alena",
+      },
+    });
+    expect(signedInPerson(forged, "app", APP)).toEqual({
+      status: "unavailable",
+      reason: "not-hosted",
+    });
+  });
+
+  test("a request that did not come through the gateway is nobody", () => {
+    for (const host of ["127.0.0.1:43100", "notes.vm-01.example.lazurio.io"])
+      expect(
+        signedInPerson(
+          new Request(`http://${host}/`, {
+            headers: { host, "x-auth-request-user": ALENA },
+          }),
+          "app",
+          HOSTED,
+        ),
+      ).toEqual({ status: "unavailable", reason: "not-through-gateway" });
+  });
+
+  test("no subject, a malformed one or a repeated header is nobody", () => {
+    for (const subject of [
+      undefined,
+      "",
+      ALENA.toUpperCase(),
+      `${ALENA}0`,
+      "alena",
+      `${ALENA}, 9a8b7c6d-5e4f-4321-8fed-cba987654321`,
+    ])
+      expect(
+        signedInPerson(
+          through(
+            subject === undefined ? {} : { "x-auth-request-user": subject },
+          ),
+          "app",
+          HOSTED,
+        ),
+      ).toEqual({ status: "unavailable", reason: "no-person" });
+  });
+
+  test("a username outside the Lazurio rule is no username", () => {
+    for (const username of [
+      "Alena",
+      "al",
+      "a".repeat(40),
+      "-alena",
+      "ale--na",
+      ALENA,
+      "service-account-pilot",
+      "alena, bob",
+    ])
+      expect(
+        signedInPerson(
+          through({
+            "x-auth-request-user": ALENA,
+            "x-auth-request-preferred-username": username,
+          }),
+          "app",
+          HOSTED,
+        ),
+      ).toEqual({ status: "signed-in", subject: ALENA, username: null });
+    expect(isLazurioUsername("bob-example")).toBe(true);
+  });
+
+  test("per request: another account on the next request is that person", () => {
+    const bob = "9a8b7c6d-5e4f-4321-8fed-cba987654321";
+    expect(
+      signedInPerson(through({ "x-auth-request-user": ALENA }), "app", HOSTED),
+    ).toMatchObject({ subject: ALENA });
+    expect(
+      signedInPerson(through({ "x-auth-request-user": bob }), "app", HOSTED),
+    ).toMatchObject({ subject: bob });
+  });
+
+  test("an App started outside Lazurio fails like listener()", () => {
+    expect(thrown(() => signedInPerson(through(), "app", {})).code).toBe(
+      "listener-missing",
+    );
+  });
 });

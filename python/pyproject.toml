@@ -1,7 +1,7 @@
 [project]
 name = "lazurio-module-kit"
-version = "0.1.0"
-description = "Lazurio Module Standard runtime helpers: listener, health"
+version = "0.2.0"
+description = "Lazurio Module Standard runtime helpers: listener, health, signed-in person"
 license = "MIT"
 requires-python = ">=3.11"
 dependencies = []

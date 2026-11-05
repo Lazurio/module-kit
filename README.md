@@ -1,8 +1,8 @@
 # @lazurio/module-kit
 
 Runtime helpers for Apps that follow the **Lazurio Module Standard**: read the
-listener a Lazurio Platform assigned, answer health, and shut down cleanly on
-`SIGTERM`.
+listener a Lazurio Platform assigned, answer health, shut down cleanly on
+`SIGTERM`, and read who is signed in to Lazurio for a request.
 
 This is the **only shared runtime library of a Module**. It stays small on
 purpose: reading the runtime environment, health, shutdown and dev server
@@ -12,7 +12,7 @@ beyond that belongs in the Module itself.
 ## Install
 
 ```sh
-bun add github:Lazurio/module-kit#v0.2.0
+bun add github:Lazurio/module-kit#v0.3.0
 ```
 
 The package ships TypeScript sources (`exports` and `types` point at
@@ -61,8 +61,57 @@ try {
 | `onShutdown(fn, { timeoutMs = 10_000 })` | on `SIGTERM`/`SIGINT`, runs `fn` once and exits 0; exits 1 if `fn` throws or does not finish within `timeoutMs`; returns a function that removes the handlers |
 | `requireEnvironment(names, env)` | the values as a record; throws `environment-missing` naming every absent or empty variable |
 
+| `signedInPerson(request, id = "app", env)` | who is signed in to Lazurio for this request: `{ status: "signed-in", subject, username }` or `{ status: "unavailable", reason }`, see [Who is signed in](#who-is-signed-in) |
+| `isLazurioUsername(value)` | whether a value is a Lazurio username (3–39 lowercase letters and digits, single dashes between them, not UUID-shaped, not a service account) |
+
 `ModuleKitError.code` is one of `listener-missing`, `listeners-invalid` or
 `environment-missing`.
+
+## Who is signed in
+
+On a Remote Environment the Environment's gateway admits every request to a
+Module with the person's Lazurio session and then sets two request headers
+from its own admission answer: `X-Auth-Request-User`, the Lazurio account's
+subject (a lowercase UUID), and `X-Auth-Request-Preferred-Username`, the
+person's Lazurio username. Every copy a client sends is removed first. The
+contract is the Module Standard's "Who is signed in" in Lazurio Platform
+(`docs/module-standard.md`).
+
+```ts
+import { signedInPerson } from "@lazurio/module-kit";
+
+// inside Bun.serve fetch(request)
+const person = signedInPerson(request, "app");
+if (person.status === "signed-in")
+  return Response.json({ subject: person.subject, name: person.username });
+return Response.json({ unavailable: person.reason });
+```
+
+- **Only behind the gateway.** The headers count only when the listener has an
+  external origin (`LAZURIO_RUNTIME_LISTENER_<ID>_EXTERNAL_ORIGIN`, which the
+  Platform passes on a Remote Environment) and the request's `Host` is that
+  origin's host. On a person's computer the result is always
+  `unavailable: not-hosted`, whatever the request carries; a request from a
+  sibling or a script on the Environment is `not-through-gateway`; the
+  Environment browser's local entry and a gateway without this capability give
+  `no-person`. Show these honestly as "unavailable", never as a guessed name.
+- **Per request.** Read it for each request and never cache it: after another
+  account signs in, the next request names the new person, and an expired
+  session never reaches the Module.
+- **Remember a person by `subject`**, show `username`. `username` is `null`
+  when the gateway named none.
+- **Read-only.** It is identity for display and the Module's own rules: not a
+  role, a grant, a key to data or a signature. Do not forward the headers to a
+  sibling or another service.
+- **Its boundary is the Environment.** Any process on the Environment that
+  reaches the Module's loopback port could send the headers itself, like it
+  could read the Module's data. Where identity must hold against the
+  Environment's operator, it needs an identity signed by Lazurio Auth, which
+  this helper does not provide.
+
+Python: `signed_in_person(headers, "app")` takes the request headers as a
+mapping (matched case-insensitively; a repeated header reads as none) and
+returns `SignedIn(subject, username)` or `Unavailable(reason)`.
 
 ## Bun.serve
 
@@ -123,7 +172,7 @@ The `python/` directory holds `lazurio-module-kit`, the same `listener` and
 `health` semantics for a Python Module (`uv` + `pyproject.toml`):
 
 ```sh
-uv add "lazurio-module-kit @ git+https://github.com/Lazurio/module-kit@v0.1.0#subdirectory=python"
+uv add "lazurio-module-kit @ git+https://github.com/Lazurio/module-kit@v0.3.0#subdirectory=python"
 ```
 
 ```python
