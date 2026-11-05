@@ -339,37 +339,73 @@ export function requireEnvironment<const Name extends string>(
   >;
 }
 
-/** Who is signed in to Lazurio for one incoming request, or why that is
- * unavailable. Read-only identity for display and the Module's own rules:
- * never a role, a grant, a key to data or a signature. */
-export type SignedInPerson =
+/** A person the Environment's gateway admitted. */
+export type AppPerson = Readonly<{
+  /** The Lazurio account's subject, a lowercase UUID: stable for the
+   * account, the key to remember a person by. */
+  subject: string;
+  /** The person's Lazurio username, to show; null when the gateway's answer
+   * named none. */
+  username: string | null;
+}>;
+
+/** Who came to this App and with which application role (decision 0231).
+ * The stable contract of Lazurio for a Module: its fields and values never
+ * change meaning or disappear, and new information comes as new fields.
+ *
+ * - `environment`: the person has the whole Environment where the App runs,
+ *   so they are an application admin.
+ * - `app`: the person has this App only, with the application role the
+ *   Organization gave them.
+ * - `local`: a request from inside the Environment (a person's own computer
+ *   with no gateway, a sibling or a script on the Environment, or the
+ *   Environment browser's local entry): an application admin without a name.
+ * - `unknown`: a request that came through the gateway without identity
+ *   (a gateway without this capability): no application role at all.
+ *
+ * What application admin and application user may do is the Organization's
+ * rule in the Module's code, enforced on the server for every request. The
+ * answer is no key to data and signs nothing. */
+export type AppAccess =
   | Readonly<{
-      status: "signed-in";
-      /** The Lazurio account's subject, a lowercase UUID: stable for the
-       * account, the key to remember a person by. */
-      subject: string;
-      /** The person's Lazurio username, to show; null when the gateway's
-       * answer named none. */
-      username: string | null;
+      entry: "environment";
+      appRole: "admin";
+      person: AppPerson;
+      /** Who states it: the Environment's gateway, or later an identity
+       * signed by Lazurio Auth for use outside the Environment. */
+      source: "gateway" | "auth";
     }>
   | Readonly<{
-      status: "unavailable";
-      /** `not-hosted`: no gateway in front of this listener (a person's
-       * computer, or an Environment without one), so no request names
-       * anyone. `not-through-gateway`: the request's `Host` is not the
-       * listener's external origin (a sibling, a script on the Environment).
-       * `no-person`: the gateway named nobody (the Environment browser's
-       * local entry, a gateway without this capability). */
-      reason: "not-hosted" | "not-through-gateway" | "no-person";
+      entry: "app";
+      appRole: "admin" | "user";
+      person: AppPerson;
+      source: "gateway" | "auth";
+    }>
+  | Readonly<{
+      entry: "local";
+      appRole: "admin";
+      person: null;
+      reason: "not-hosted" | "not-through-gateway" | "local-entry";
+    }>
+  | Readonly<{
+      entry: "unknown";
+      appRole: null;
+      person: null;
+      reason: "no-identity";
     }>;
 
-/** What `signedInPerson` reads of a request: a `Request` or its headers. */
+/** What `appAccess` reads of a request: a `Request` or its headers. */
 export type RequestHeaders = Readonly<{ get(name: string): string | null }>;
 
-/** The headers the Environment's gateway sets after it admits a request
- * (Lazurio Module Standard, "Who is signed in"). */
-export const SIGNED_IN_SUBJECT_HEADER = "x-auth-request-user";
-export const SIGNED_IN_USERNAME_HEADER = "x-auth-request-preferred-username";
+/** How the Environment's gateway carries its statement to the App. Internal
+ * transport, not a contract: only `appAccess` reads it, and it may change
+ * without changing `appAccess`. Exported for a Module's own tests. */
+export const GATEWAY_HEADERS = Object.freeze({
+  subject: "x-auth-request-user",
+  username: "x-auth-request-preferred-username",
+  entry: "x-lazurio-entry",
+  appRole: "x-lazurio-app-role",
+});
 
 const SUBJECT =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -389,38 +425,74 @@ export function isLazurioUsername(value: unknown): value is string {
   );
 }
 
-/** Who is signed in to Lazurio for this request, read from the headers the
- * Environment's gateway sets from its own admission answer.
+/** Who came to this App and with which application role, for one request
+ * (decision 0231; Lazurio Module Standard, "Who came and with which role").
  *
- * The headers count only behind the gateway: when the listener has an
- * external origin (`LAZURIO_RUNTIME_LISTENER_<ID>_EXTERNAL_ORIGIN`, a hosted
- * entrypoint) and the request's `Host` is that origin's host. Everywhere
- * else the result is `unavailable` whatever the request carries, because
- * there a header could come from anyone. The gateway removes every client
+ * The gateway's statement counts only when the listener has an external
+ * origin (`LAZURIO_RUNTIME_LISTENER_<ID>_EXTERNAL_ORIGIN`, a hosted
+ * entrypoint) and the request's `Host` is that origin's host; any other
+ * request came from inside the Environment and is `local`. Behind the
+ * gateway a statement that is missing, repeated or of another form is
+ * `unknown`, never an application role. The gateway removes every client
  * copy and admits every request again, so read it per request and never
- * cache it: after another account signs in, the next request names the new
- * person, and an expired session never reaches the Module. A repeated header
- * or a value of another form reads as nobody. Throws `listener-missing` like
- * `listener(id)`. */
-export function signedInPerson(
+ * cache it. Inside the Environment the statement holds as far as the
+ * Environment does: a process on it that reaches the App's loopback port
+ * could send anything, as it could read the App's data (decision 0196).
+ * Throws `listener-missing` like `listener(id)`. */
+export function appAccess(
   request: Request | RequestHeaders,
   id = "app",
   env: Environment = process.env,
-): SignedInPerson {
+): AppAccess {
   const { externalOrigin } = listener(id, env);
   if (externalOrigin === null)
-    return { status: "unavailable", reason: "not-hosted" };
+    return {
+      entry: "local",
+      appRole: "admin",
+      person: null,
+      reason: "not-hosted",
+    };
   const headers: RequestHeaders =
     "headers" in request ? request.headers : request;
   if (headers.get("host") !== new URL(externalOrigin).host)
-    return { status: "unavailable", reason: "not-through-gateway" };
-  const subject = headers.get(SIGNED_IN_SUBJECT_HEADER);
-  if (subject === null || !SUBJECT.test(subject))
-    return { status: "unavailable", reason: "no-person" };
-  const username = headers.get(SIGNED_IN_USERNAME_HEADER);
-  return {
-    status: "signed-in",
+    return {
+      entry: "local",
+      appRole: "admin",
+      person: null,
+      reason: "not-through-gateway",
+    };
+  const entry = headers.get(GATEWAY_HEADERS.entry);
+  const subject = headers.get(GATEWAY_HEADERS.subject);
+  if (entry === "local" && subject === null)
+    return {
+      entry: "local",
+      appRole: "admin",
+      person: null,
+      reason: "local-entry",
+    };
+  const unknown: AppAccess = {
+    entry: "unknown",
+    appRole: null,
+    person: null,
+    reason: "no-identity",
+  };
+  if (subject === null || !SUBJECT.test(subject)) return unknown;
+  const username = headers.get(GATEWAY_HEADERS.username);
+  const person: AppPerson = {
     subject,
     username: isLazurioUsername(username) ? username : null,
   };
+  if (entry === "environment")
+    return {
+      entry: "environment",
+      appRole: "admin",
+      person,
+      source: "gateway",
+    };
+  if (entry === "app") {
+    const appRole = headers.get(GATEWAY_HEADERS.appRole);
+    if (appRole === "admin" || appRole === "user")
+      return { entry: "app", appRole, person, source: "gateway" };
+  }
+  return unknown;
 }

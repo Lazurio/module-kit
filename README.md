@@ -2,7 +2,7 @@
 
 Runtime helpers for Apps that follow the **Lazurio Module Standard**: read the
 listener a Lazurio Platform assigned, answer health, shut down cleanly on
-`SIGTERM`, and read who is signed in to Lazurio for a request.
+`SIGTERM`, and learn who came to the App and with which application role.
 
 This is the **only shared runtime library of a Module**. It stays small on
 purpose: reading the runtime environment, health, shutdown and dev server
@@ -61,57 +61,65 @@ try {
 | `onShutdown(fn, { timeoutMs = 10_000 })` | on `SIGTERM`/`SIGINT`, runs `fn` once and exits 0; exits 1 if `fn` throws or does not finish within `timeoutMs`; returns a function that removes the handlers |
 | `requireEnvironment(names, env)` | the values as a record; throws `environment-missing` naming every absent or empty variable |
 
-| `signedInPerson(request, id = "app", env)` | who is signed in to Lazurio for this request: `{ status: "signed-in", subject, username }` or `{ status: "unavailable", reason }`, see [Who is signed in](#who-is-signed-in) |
+| `appAccess(request, id = "app", env)` | who came to the App for this request and with which application role: `{ entry, appRole, person, source }` or, without a person, `{ entry, appRole, person: null, reason }`, see [Who came and with which role](#who-came-and-with-which-role) |
 | `isLazurioUsername(value)` | whether a value is a Lazurio username (3–39 lowercase letters and digits, single dashes between them, not UUID-shaped, not a service account) |
 
 `ModuleKitError.code` is one of `listener-missing`, `listeners-invalid` or
 `environment-missing`.
 
-## Who is signed in
+## Who came and with which role
 
-On a Remote Environment the Environment's gateway admits every request to a
-Module with the person's Lazurio session and then sets two request headers
-from its own admission answer: `X-Auth-Request-User`, the Lazurio account's
-subject (a lowercase UUID), and `X-Auth-Request-Preferred-Username`, the
-person's Lazurio username. Every copy a client sends is removed first. The
-contract is the Module Standard's "Who is signed in" in Lazurio Platform
-(`docs/module-standard.md`).
+Lazurio decides who may open a Module's App and with which application role,
+application admin or application user, and the Organization decides in the
+Module's code what each role may do (Lazurio decision 0231). `appAccess` is the
+only way a Module learns it, and its answer is the stable contract: its fields
+and values never change meaning or disappear, and new information comes as new
+fields. The contract is the Module Standard's "Who came and with which role"
+in Lazurio Platform (`docs/module-standard.md`).
 
 ```ts
-import { signedInPerson } from "@lazurio/module-kit";
+import { appAccess } from "@lazurio/module-kit";
 
-// inside Bun.serve fetch(request)
-const person = signedInPerson(request, "app");
-if (person.status === "signed-in")
-  return Response.json({ subject: person.subject, name: person.username });
-return Response.json({ unavailable: person.reason });
+// inside Bun.serve fetch(request), on every request, including APIs
+const access = appAccess(request, "app");
+if (access.appRole === null)
+  return new Response("Lazurio did not say who you are.", { status: 403 });
+const mayApprove = access.appRole === "admin"; // the Organization's own rule
+const author = access.person?.subject ?? null; // null: from inside the Environment
 ```
 
-- **Only behind the gateway.** The headers count only when the listener has an
-  external origin (`LAZURIO_RUNTIME_LISTENER_<ID>_EXTERNAL_ORIGIN`, which the
-  Platform passes on a Remote Environment) and the request's `Host` is that
-  origin's host. On a person's computer the result is always
-  `unavailable: not-hosted`, whatever the request carries; a request from a
-  sibling or a script on the Environment is `not-through-gateway`; the
-  Environment browser's local entry and a gateway without this capability give
-  `no-person`. Show these honestly as "unavailable", never as a guessed name.
-- **Per request.** Read it for each request and never cache it: after another
-  account signs in, the next request names the new person, and an expired
-  session never reaches the Module.
-- **Remember a person by `subject`**, show `username`. `username` is `null`
-  when the gateway named none.
-- **Read-only.** It is identity for display and the Module's own rules: not a
-  role, a grant, a key to data or a signature. Do not forward the headers to a
-  sibling or another service.
-- **Its boundary is the Environment.** Any process on the Environment that
-  reaches the Module's loopback port could send the headers itself, like it
-  could read the Module's data. Where identity must hold against the
-  Environment's operator, it needs an identity signed by Lazurio Auth, which
-  this helper does not provide.
+| `entry` | `appRole` | `person` | When |
+| --- | --- | --- | --- |
+| `environment` | `admin` | subject and username | the person has the whole Environment where the App runs |
+| `app` | `admin` or `user` | subject and username | the person has this App only, with the role the Organization gave them |
+| `local` | `admin` | `null` | a request from inside the Environment: a person's own computer (`reason: "not-hosted"`), a sibling or a script on the Environment (`not-through-gateway`), the Environment browser's local entry (`local-entry`) |
+| `unknown` | `null` | `null` | through the gateway without identity (`no-identity`), for example a gateway release without this capability: no role, show "unavailable" |
 
-Python: `signed_in_person(headers, "app")` takes the request headers as a
-mapping (matched case-insensitively; a repeated header reads as none) and
-returns `SignedIn(subject, username)` or `Unavailable(reason)`.
+`source` is `gateway` today: the Environment's gateway states it from its own
+admission answer after removing every copy a client sent. An identity signed by
+Lazurio Auth for use outside the Environment will come as `source: "auth"`.
+
+- **Enforce on the server, per request.** Check the role for every request,
+  including APIs, downloads, WebSockets and direct URLs, never only by hiding a
+  button, and never cache it: after another account signs in, the next request
+  names the new person.
+- **Remember a person by `subject`**, show `username` (`null` when the gateway
+  named none). Never fill in a name from the browser, the operating system
+  account or the Environment's assignee.
+- **Finer roles are the Module's.** Approvers, technicians and the like live in
+  the Module's own data, keyed by `subject`. Lazurio keeps only the two roles.
+- **Its boundary is the Environment.** A process on the Environment that reaches
+  the App's loopback port could send anything, as it could read the App's data.
+  The statement holds against visitors who have only the App, not against the
+  Environment's operator. Do not forward it to a sibling or another service.
+- **Transport is not the contract.** `GATEWAY_HEADERS` names the headers the
+  gateway uses today so that a Module's own tests can build requests; read them
+  only through `appAccess`.
+
+Python: `app_access(headers, "app")` takes the request headers as a mapping
+(matched case-insensitively; a repeated header reads as none) and returns
+`AppAccess(entry, app_role, person, source, reason)` with
+`AppPerson(subject, username)` or `None`, by the same rules.
 
 ## Bun.serve
 
@@ -168,8 +176,8 @@ export default defineConfig({
 
 ## Python
 
-The `python/` directory holds `lazurio-module-kit`, the same `listener` and
-`health` semantics for a Python Module (`uv` + `pyproject.toml`):
+The `python/` directory holds `lazurio-module-kit`, the same `listener`,
+`health` and `app_access` semantics for a Python Module (`uv` + `pyproject.toml`):
 
 ```sh
 uv add "lazurio-module-kit @ git+https://github.com/Lazurio/module-kit@v0.3.0#subdirectory=python"

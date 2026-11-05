@@ -13,22 +13,22 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 from typing import Literal, NamedTuple
 from urllib.parse import urlsplit
 
 __all__ = [
-    "SIGNED_IN_SUBJECT_HEADER",
-    "SIGNED_IN_USERNAME_HEADER",
+    "GATEWAY_HEADERS",
+    "AppAccess",
+    "AppPerson",
     "HealthResponse",
     "Listener",
     "ModuleKitError",
-    "SignedIn",
-    "Unavailable",
+    "app_access",
     "health",
     "is_lazurio_username",
     "listener",
     "listener_variable_key",
-    "signed_in_person",
 ]
 
 ErrorCode = Literal["listener-missing", "listeners-invalid", "environment-missing"]
@@ -135,31 +135,53 @@ def health(ready: Ready) -> Callable[[], Awaitable[HealthResponse]]:
     return check
 
 
-SIGNED_IN_SUBJECT_HEADER = "x-auth-request-user"
-SIGNED_IN_USERNAME_HEADER = "x-auth-request-preferred-username"
+GATEWAY_HEADERS: Mapping[str, str] = MappingProxyType(
+    {
+        "subject": "x-auth-request-user",
+        "username": "x-auth-request-preferred-username",
+        "entry": "x-lazurio-entry",
+        "app_role": "x-lazurio-app-role",
+    }
+)
+"""How the Environment's gateway carries its statement to the App. Internal
+transport, not a contract: only ``app_access`` reads it. Exported for a
+Module's own tests."""
+
 _SUBJECT = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+Entry = Literal["environment", "app", "local", "unknown"]
+AppRole = Literal["admin", "user"]
+Source = Literal["gateway", "auth"]
+Reason = Literal["not-hosted", "not-through-gateway", "local-entry", "no-identity"]
 
 
 @dataclass(frozen=True)
-class SignedIn:
-    """The person signed in to Lazurio for one request: the account's subject
-    (a lowercase UUID, the key to remember them by) and the Lazurio username
-    to show, or ``None``. Read-only identity, never a role, a grant, a key to
-    data or a signature."""
+class AppPerson:
+    """A person the Environment's gateway admitted: the account's subject (a
+    lowercase UUID, the key to remember them by) and the Lazurio username to
+    show, or ``None``."""
 
     subject: str
     username: str | None
-    status: Literal["signed-in"] = "signed-in"
 
 
 @dataclass(frozen=True)
-class Unavailable:
-    """Why nobody is named: ``not-hosted`` (no gateway in front of this
-    listener), ``not-through-gateway`` (the request's Host is not the
-    listener's external origin) or ``no-person`` (the gateway named nobody)."""
+class AppAccess:
+    """Who came to this App and with which application role (decision 0231);
+    the same contract as ``appAccess`` of the TypeScript package.
 
-    reason: Literal["not-hosted", "not-through-gateway", "no-person"]
-    status: Literal["unavailable"] = "unavailable"
+    ``entry`` is ``environment`` (the whole Environment, so ``app_role`` is
+    ``admin``), ``app`` (this App only, with the role the Organization gave),
+    ``local`` (a request from inside the Environment: an application admin
+    without a name) or ``unknown`` (through the gateway without identity: no
+    ``app_role``). ``source`` is set with a person, ``reason`` without one.
+    Fields and values never change meaning or disappear."""
+
+    entry: Entry
+    app_role: AppRole | None
+    person: AppPerson | None
+    source: Source | None = None
+    reason: Reason | None = None
 
 
 def is_lazurio_username(value: object) -> bool:
@@ -180,24 +202,38 @@ def _header(headers: Mapping[str, str], name: str) -> str | None:
     return values[0] if len(values) == 1 else None
 
 
-def signed_in_person(
+def app_access(
     headers: Mapping[str, str],
     listener_id: str = "app",
     env: Mapping[str, str] | None = None,
-) -> SignedIn | Unavailable:
-    """Who is signed in to Lazurio for this request, from the headers the
-    Environment's gateway sets from its own admission answer; the same rules
-    as ``signedInPerson`` of the TypeScript package. The headers count only
-    when the listener has an external origin and the request's Host is that
-    origin's host. Read it per request, never cache it. Raises
+) -> AppAccess:
+    """Who came to this App and with which application role, for one request;
+    the same rules as ``appAccess`` of the TypeScript package. The gateway's
+    statement counts only when the listener has an external origin and the
+    request's Host is that origin's host; any other request is ``local``.
+    Behind the gateway a missing, repeated or malformed statement is
+    ``unknown``, never a role. Read it per request, never cache it. Raises
     ``listener-missing`` like ``listener``."""
     origin = listener(listener_id, env).external_origin
     if origin is None:
-        return Unavailable("not-hosted")
+        return AppAccess("local", "admin", None, reason="not-hosted")
     if _header(headers, "host") != urlsplit(origin).netloc:
-        return Unavailable("not-through-gateway")
-    subject = _header(headers, SIGNED_IN_SUBJECT_HEADER)
+        return AppAccess("local", "admin", None, reason="not-through-gateway")
+    entry = _header(headers, GATEWAY_HEADERS["entry"])
+    subject = _header(headers, GATEWAY_HEADERS["subject"])
+    if entry == "local" and subject is None:
+        return AppAccess("local", "admin", None, reason="local-entry")
+    unknown = AppAccess("unknown", None, None, reason="no-identity")
     if subject is None or _SUBJECT.fullmatch(subject) is None:
-        return Unavailable("no-person")
-    username = _header(headers, SIGNED_IN_USERNAME_HEADER)
-    return SignedIn(subject, username if is_lazurio_username(username) else None)
+        return unknown
+    username = _header(headers, GATEWAY_HEADERS["username"])
+    person = AppPerson(subject, username if is_lazurio_username(username) else None)
+    if entry == "environment":
+        return AppAccess("environment", "admin", person, source="gateway")
+    if entry == "app":
+        role = _header(headers, GATEWAY_HEADERS["app_role"])
+        if role == "admin":
+            return AppAccess("app", "admin", person, source="gateway")
+        if role == "user":
+            return AppAccess("app", "user", person, source="gateway")
+    return unknown

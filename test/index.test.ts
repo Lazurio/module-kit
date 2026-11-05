@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import {
   allowedHosts,
+  appAccess,
   astroServerOptions,
+  GATEWAY_HEADERS,
   health,
   isLazurioUsername,
   listener,
@@ -13,7 +15,6 @@ import {
   requireEnvironment,
   runtimeIdentity,
   type ShutdownProcess,
-  signedInPerson,
   viteServerOptions,
   withHealth,
 } from "../src/index.ts";
@@ -494,81 +495,134 @@ test("viteShutdownPlugin exits 0 as soon as close() resolves", async () => {
   expect(fake.exits).toEqual([0]);
 });
 
-describe("signedInPerson", () => {
+describe("appAccess", () => {
   const HOST = "deals.vm-01.example.lazurio.io";
   const ALENA = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
+  const BOB = "9a8b7c6d-5e4f-4321-8fed-cba987654321";
   const through = (extra: Record<string, string> = {}) =>
     new Request(`https://${HOST}/api/me`, {
       headers: { host: HOST, ...extra },
     });
-
-  test("behind the gateway: the subject and username it set", () => {
-    expect(
-      signedInPerson(
-        through({
-          "X-Auth-Request-User": ALENA,
-          "X-Auth-Request-Preferred-Username": "alena",
-        }),
-        "app",
-        HOSTED,
-      ),
-    ).toEqual({ status: "signed-in", subject: ALENA, username: "alena" });
+  const person = (subject = ALENA, entry = "environment") => ({
+    [GATEWAY_HEADERS.subject]: subject,
+    [GATEWAY_HEADERS.username]: "alena",
+    [GATEWAY_HEADERS.entry]: entry,
   });
+  const unknown = {
+    entry: "unknown",
+    appRole: null,
+    person: null,
+    reason: "no-identity",
+  } as const;
 
-  test("reads plain headers too (any server)", () => {
-    const headers = new Headers({ host: HOST, "x-auth-request-user": ALENA });
-    expect(signedInPerson(headers, "app", HOSTED)).toEqual({
-      status: "signed-in",
-      subject: ALENA,
-      username: null,
+  test("the whole Environment: an application admin with the person", () => {
+    expect(appAccess(through(person()), "app", HOSTED)).toEqual({
+      entry: "environment",
+      appRole: "admin",
+      person: { subject: ALENA, username: "alena" },
+      source: "gateway",
     });
   });
 
-  test("without a gateway no header names anyone", () => {
-    const forged = new Request("http://127.0.0.1:43100/", {
-      headers: {
-        host: "127.0.0.1:43100",
-        "x-auth-request-user": ALENA,
-        "x-auth-request-preferred-username": "alena",
-      },
-    });
-    expect(signedInPerson(forged, "app", APP)).toEqual({
-      status: "unavailable",
-      reason: "not-hosted",
-    });
-  });
-
-  test("a request that did not come through the gateway is nobody", () => {
-    for (const host of ["127.0.0.1:43100", "notes.vm-01.example.lazurio.io"])
+  test("this App only: the application role the gateway stated", () => {
+    for (const appRole of ["admin", "user"] as const)
       expect(
-        signedInPerson(
-          new Request(`http://${host}/`, {
-            headers: { host, "x-auth-request-user": ALENA },
+        appAccess(
+          through({
+            ...person(ALENA, "app"),
+            [GATEWAY_HEADERS.appRole]: appRole,
           }),
           "app",
           HOSTED,
         ),
-      ).toEqual({ status: "unavailable", reason: "not-through-gateway" });
+      ).toEqual({
+        entry: "app",
+        appRole,
+        person: { subject: ALENA, username: "alena" },
+        source: "gateway",
+      });
   });
 
-  test("no subject, a malformed one or a repeated header is nobody", () => {
-    for (const subject of [
-      undefined,
-      "",
-      ALENA.toUpperCase(),
-      `${ALENA}0`,
-      "alena",
-      `${ALENA}, 9a8b7c6d-5e4f-4321-8fed-cba987654321`,
-    ])
+  test("this App only without a valid role is unknown, never a role", () => {
+    for (const role of [undefined, "", "Admin", "owner", "admin, user"])
       expect(
-        signedInPerson(
-          through(
-            subject === undefined ? {} : { "x-auth-request-user": subject },
-          ),
+        appAccess(
+          through({
+            ...person(ALENA, "app"),
+            ...(role === undefined ? {} : { [GATEWAY_HEADERS.appRole]: role }),
+          }),
           "app",
           HOSTED,
         ),
-      ).toEqual({ status: "unavailable", reason: "no-person" });
+      ).toEqual(unknown);
+  });
+
+  test("reads plain headers too (any server)", () => {
+    const headers = new Headers({ host: HOST, ...person() });
+    expect(appAccess(headers, "app", HOSTED)).toMatchObject({
+      entry: "environment",
+      appRole: "admin",
+    });
+  });
+
+  test("without a gateway every request is local, whatever it carries", () => {
+    const forged = new Request("http://127.0.0.1:43100/", {
+      headers: {
+        host: "127.0.0.1:43100",
+        ...person(ALENA, "app"),
+        [GATEWAY_HEADERS.appRole]: "user",
+      },
+    });
+    expect(appAccess(forged, "app", APP)).toEqual({
+      entry: "local",
+      appRole: "admin",
+      person: null,
+      reason: "not-hosted",
+    });
+  });
+
+  test("a request that did not come through the gateway is local", () => {
+    for (const host of ["127.0.0.1:43100", "notes.vm-01.example.lazurio.io"])
+      expect(
+        appAccess(
+          new Request(`http://${host}/`, { headers: { host, ...person() } }),
+          "app",
+          HOSTED,
+        ),
+      ).toEqual({
+        entry: "local",
+        appRole: "admin",
+        person: null,
+        reason: "not-through-gateway",
+      });
+  });
+
+  test("the Environment browser's local entry is local without a name", () => {
+    expect(
+      appAccess(through({ [GATEWAY_HEADERS.entry]: "local" }), "app", HOSTED),
+    ).toEqual({
+      entry: "local",
+      appRole: "admin",
+      person: null,
+      reason: "local-entry",
+    });
+  });
+
+  test("through the gateway, a missing or malformed statement is unknown", () => {
+    const cases: Record<string, string>[] = [
+      {},
+      { [GATEWAY_HEADERS.subject]: ALENA },
+      { ...person(), [GATEWAY_HEADERS.entry]: "full" },
+      { ...person(), [GATEWAY_HEADERS.entry]: "local" },
+      { ...person(""), [GATEWAY_HEADERS.entry]: "environment" },
+      person(ALENA.toUpperCase()),
+      person(`${ALENA}0`),
+      person("alena"),
+      person(`${ALENA}, ${BOB}`),
+      { ...person(), [GATEWAY_HEADERS.entry]: "environment, app" },
+    ];
+    for (const headers of cases)
+      expect(appAccess(through(headers), "app", HOSTED)).toEqual(unknown);
   });
 
   test("a username outside the Lazurio rule is no username", () => {
@@ -583,30 +637,26 @@ describe("signedInPerson", () => {
       "alena, bob",
     ])
       expect(
-        signedInPerson(
-          through({
-            "x-auth-request-user": ALENA,
-            "x-auth-request-preferred-username": username,
-          }),
+        appAccess(
+          through({ ...person(), [GATEWAY_HEADERS.username]: username }),
           "app",
           HOSTED,
-        ),
-      ).toEqual({ status: "signed-in", subject: ALENA, username: null });
+        ).person,
+      ).toEqual({ subject: ALENA, username: null });
     expect(isLazurioUsername("bob-example")).toBe(true);
   });
 
   test("per request: another account on the next request is that person", () => {
-    const bob = "9a8b7c6d-5e4f-4321-8fed-cba987654321";
-    expect(
-      signedInPerson(through({ "x-auth-request-user": ALENA }), "app", HOSTED),
-    ).toMatchObject({ subject: ALENA });
-    expect(
-      signedInPerson(through({ "x-auth-request-user": bob }), "app", HOSTED),
-    ).toMatchObject({ subject: bob });
+    expect(appAccess(through(person()), "app", HOSTED).person).toMatchObject({
+      subject: ALENA,
+    });
+    expect(appAccess(through(person(BOB)), "app", HOSTED).person).toMatchObject(
+      { subject: BOB },
+    );
   });
 
   test("an App started outside Lazurio fails like listener()", () => {
-    expect(thrown(() => signedInPerson(through(), "app", {})).code).toBe(
+    expect(thrown(() => appAccess(through(), "app", {})).code).toBe(
       "listener-missing",
     );
   });

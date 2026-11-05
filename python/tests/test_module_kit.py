@@ -1,18 +1,20 @@
 import asyncio
 import json
+from typing import Literal
 
 import pytest
 
 from lazurio_module_kit import (
+    GATEWAY_HEADERS,
+    AppAccess,
+    AppPerson,
     HealthResponse,
     Listener,
     ModuleKitError,
-    SignedIn,
-    Unavailable,
+    app_access,
     health,
     listener,
     listener_variable_key,
-    signed_in_person,
 )
 
 APP = {
@@ -80,7 +82,7 @@ def test_reads_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _run(ready: object) -> HealthResponse:
-    return asyncio.run(health(ready)())  # type: ignore[arg-type]
+    return asyncio.run(health(ready)())
 
 
 def test_health_ok() -> None:
@@ -109,35 +111,86 @@ def test_health_raising_is_starting() -> None:
 HOST = "deals.vm-01.example.lazurio.io"
 HOSTED = {**APP, "LAZURIO_RUNTIME_LISTENER_APP_EXTERNAL_ORIGIN": f"https://{HOST}"}
 ALENA = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
+UNKNOWN = AppAccess("unknown", None, None, reason="no-identity")
 
 
-def test_signed_in_behind_the_gateway() -> None:
-    headers = {"Host": HOST, "X-Auth-Request-User": ALENA, "X-Auth-Request-Preferred-Username": "alena"}
-    assert signed_in_person(headers, "app", HOSTED) == SignedIn(ALENA, "alena")
+def _person(subject: str = ALENA, entry: str = "environment") -> dict[str, str]:
+    return {
+        "host": HOST,
+        GATEWAY_HEADERS["subject"]: subject,
+        GATEWAY_HEADERS["username"]: "alena",
+        GATEWAY_HEADERS["entry"]: entry,
+    }
 
 
-def test_not_hosted_ignores_every_header() -> None:
-    headers = {"host": "127.0.0.1:43100", "x-auth-request-user": ALENA}
-    assert signed_in_person(headers, "app", APP) == Unavailable("not-hosted")
+def test_whole_environment_is_an_application_admin() -> None:
+    headers = {
+        "Host": HOST,
+        "X-Auth-Request-User": ALENA,
+        "X-Auth-Request-Preferred-Username": "alena",
+        "X-Lazurio-Entry": "environment",
+    }
+    assert app_access(headers, "app", HOSTED) == AppAccess(
+        "environment", "admin", AppPerson(ALENA, "alena"), source="gateway"
+    )
 
 
-def test_not_through_the_gateway() -> None:
-    headers = {"host": "127.0.0.1:43100", "x-auth-request-user": ALENA}
-    assert signed_in_person(headers, "app", HOSTED) == Unavailable("not-through-gateway")
+@pytest.mark.parametrize("role", ["admin", "user"])
+def test_this_app_only_has_the_stated_role(role: Literal["admin", "user"]) -> None:
+    headers = {**_person(entry="app"), GATEWAY_HEADERS["app_role"]: role}
+    assert app_access(headers, "app", HOSTED) == AppAccess(
+        "app", role, AppPerson(ALENA, "alena"), source="gateway"
+    )
 
 
-@pytest.mark.parametrize("subject", [None, "", ALENA.upper(), ALENA + "0", "alena"])
-def test_no_person(subject: str | None) -> None:
-    headers = {"host": HOST} if subject is None else {"host": HOST, "x-auth-request-user": subject}
-    assert signed_in_person(headers, "app", HOSTED) == Unavailable("no-person")
+@pytest.mark.parametrize("role", [None, "", "Admin", "owner"])
+def test_this_app_only_without_a_valid_role_is_unknown(role: str | None) -> None:
+    headers = (
+        _person(entry="app") if role is None else {**_person(entry="app"), GATEWAY_HEADERS["app_role"]: role}
+    )
+    assert app_access(headers, "app", HOSTED) == UNKNOWN
 
 
-def test_repeated_subject_is_nobody() -> None:
-    headers = {"host": HOST, "x-auth-request-user": ALENA, "X-Auth-Request-User": ALENA}
-    assert signed_in_person(headers, "app", HOSTED) == Unavailable("no-person")
+def test_not_hosted_is_local_whatever_it_carries() -> None:
+    headers = {**_person(entry="app"), "host": "127.0.0.1:43100", GATEWAY_HEADERS["app_role"]: "user"}
+    assert app_access(headers, "app", APP) == AppAccess("local", "admin", None, reason="not-hosted")
+
+
+def test_not_through_the_gateway_is_local() -> None:
+    headers = {**_person(), "host": "127.0.0.1:43100"}
+    assert app_access(headers, "app", HOSTED) == AppAccess(
+        "local", "admin", None, reason="not-through-gateway"
+    )
+
+
+def test_local_entry_is_local_without_a_name() -> None:
+    headers = {"host": HOST, GATEWAY_HEADERS["entry"]: "local"}
+    assert app_access(headers, "app", HOSTED) == AppAccess("local", "admin", None, reason="local-entry")
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"host": HOST},
+        {"host": HOST, GATEWAY_HEADERS["subject"]: ALENA},
+        {**_person(), GATEWAY_HEADERS["entry"]: "full"},
+        {**_person(), GATEWAY_HEADERS["entry"]: "local"},
+        _person(""),
+        _person(ALENA.upper()),
+        _person(ALENA + "0"),
+        _person("alena"),
+    ],
+)
+def test_missing_or_malformed_statement_is_unknown(headers: dict[str, str]) -> None:
+    assert app_access(headers, "app", HOSTED) == UNKNOWN
+
+
+def test_repeated_subject_is_unknown() -> None:
+    headers = {**_person(), "X-Auth-Request-User": ALENA}
+    assert app_access(headers, "app", HOSTED) == UNKNOWN
 
 
 @pytest.mark.parametrize("username", ["Alena", "al", "a" * 40, "-alena", ALENA, "service-account-pilot"])
 def test_invalid_username_is_none(username: str) -> None:
-    headers = {"host": HOST, "x-auth-request-user": ALENA, "x-auth-request-preferred-username": username}
-    assert signed_in_person(headers, "app", HOSTED) == SignedIn(ALENA, None)
+    headers = {**_person(), GATEWAY_HEADERS["username"]: username}
+    assert app_access(headers, "app", HOSTED).person == AppPerson(ALENA, None)
