@@ -1,8 +1,8 @@
 # @lazurio/module-kit
 
 Runtime helpers for Apps that follow the **Lazurio Module Standard**: read the
-listener a Lazurio Platform assigned, answer health, and shut down cleanly on
-`SIGTERM`.
+listener a Lazurio Platform assigned, answer health, shut down cleanly on
+`SIGTERM`, and learn who came to the App and with which application role.
 
 This is the **only shared runtime library of a Module**. It stays small on
 purpose: reading the runtime environment, health, shutdown and dev server
@@ -12,7 +12,7 @@ beyond that belongs in the Module itself.
 ## Install
 
 ```sh
-bun add github:Lazurio/module-kit#v0.2.0
+bun add github:Lazurio/module-kit#v0.3.0
 ```
 
 The package ships TypeScript sources (`exports` and `types` point at
@@ -61,8 +61,81 @@ try {
 | `onShutdown(fn, { timeoutMs = 10_000 })` | on `SIGTERM`/`SIGINT`, runs `fn` once and exits 0; exits 1 if `fn` throws or does not finish within `timeoutMs`; returns a function that removes the handlers |
 | `requireEnvironment(names, env)` | the values as a record; throws `environment-missing` naming every absent or empty variable |
 
+| `appAccess(request, id = "app", env)` | who came to the App for this request and with which application role: always `{ entry, appRole, person, source, reason }`, see [Who came and with which role](#who-came-and-with-which-role) |
+| `isLazurioUsername(value)` | whether a value is a Lazurio username (3–39 lowercase letters and digits, single dashes between them, not UUID-shaped, not a service account) |
+
 `ModuleKitError.code` is one of `listener-missing`, `listeners-invalid` or
 `environment-missing`.
+
+## Who came and with which role
+
+Lazurio decides who may open a Module's App and with which application role,
+application admin or application user, and the Organization decides in the
+Module's code what each role may do (Lazurio decision 0231). `appAccess` is the
+only way a Module learns it, and its answer is the stable contract: its fields
+and values never change meaning or disappear, and new information comes as new
+fields. The contract is the Module Standard's "Who came and with which role"
+in Lazurio Platform (`docs/module-standard.md`).
+
+```ts
+import { appAccess } from "@lazurio/module-kit";
+
+// inside Bun.serve fetch(request), on every request, including APIs
+const access = appAccess(request, "app");
+if (access.appRole === null)
+  return new Response("Lazurio did not say who you are.", { status: 403 });
+const mayApprove = access.appRole === "admin"; // the Organization's own rule
+const author = access.person?.subject ?? null; // null: from inside the Environment
+```
+
+Every answer has the same five fields:
+
+| `entry` | `appRole` | `person` | `source` | `reason` | When |
+| --- | --- | --- | --- | --- | --- |
+| `environment` | `admin` | subject and username | `gateway` | `null` | the person has the whole Environment where the App runs |
+| `app` | `admin` or `user` | subject and username | `gateway` | `null` | the person has this App only, with the role the Organization gave them |
+| `local` | `admin` | `null` | `null` | `not-hosted`, `not-through-gateway`, `local-entry` | from inside the Environment: no gateway in front of the App (a person's own computer), a request to a loopback address (a sibling, a script, an agent), or the Environment browser's local entry |
+| `unknown` | `null` | `null` | `null` | `no-identity` | through the gateway without a valid statement, or a `Host` that is neither the App's hostname nor loopback: no role, show "unavailable" |
+
+`source` says who stated the person: `gateway` today, from its own admission
+answer after removing every copy a client sent; an identity signed by Lazurio
+Auth for use outside the Environment will come as `auth`. A request whose
+`Host` names the App's external hostname, in any letter case, with any port or
+a trailing dot, as the gateway matches it, counts only by the gateway's
+statement; a missing, repeated or malformed statement is `unknown`, never a
+role.
+
+- **Enforce on the server, per request.** Check the role for every request,
+  including APIs, downloads, WebSockets and direct URLs, never only by hiding a
+  button, and never cache it: after another account signs in, the next request
+  names the new person.
+- **Remember a person by `subject`**, show `username` (`null` when the gateway
+  named none). Never fill in a name from the browser, the operating system
+  account or the Environment's assignee.
+- **Finer roles are the Module's.** Approvers, technicians and the like live in
+  the Module's own data, keyed by `subject`. Lazurio keeps only the two roles.
+- **Its boundary is the Environment.** A process on the Environment that reaches
+  the App's loopback port could send anything, as it could read the App's data.
+  The statement holds against visitors who have only the App, not against the
+  Environment's operator. Do not forward it to a sibling or another service.
+- **Transport is not the contract.** `GATEWAY_HEADERS` names the headers the
+  gateway uses today so that a Module's own tests can build requests; read them
+  only through `appAccess`.
+
+**Proof through the real gateway.** `bun proof/gateway.ts <Machines checkout>`
+renders the Lazurio workspace gateway from a Machines checkout, runs it with
+Caddy in front of a TypeScript App and a Python App and checks every Host form
+a client can send: the App's hostname as is, in upper case, with `:443` or
+another port (the gateway's statement counts: `environment`/admin with a
+person, `unknown` without one, nothing without a session) and with a trailing
+dot (refused by the gateway itself). A client's forged statement never counts
+and no request through the gateway is `local`. It needs Caddy, OpenSSL and uv,
+so it is not part of `bun test`.
+
+Python: `app_access(headers, "app")` takes the request headers as a mapping
+(matched case-insensitively; a repeated header reads as none) and returns
+`AppAccess(entry, app_role, person, source, reason)` with
+`AppPerson(subject, username)` or `None`, by the same rules.
 
 ## Bun.serve
 
@@ -119,11 +192,11 @@ export default defineConfig({
 
 ## Python
 
-The `python/` directory holds `lazurio-module-kit`, the same `listener` and
-`health` semantics for a Python Module (`uv` + `pyproject.toml`):
+The `python/` directory holds `lazurio-module-kit`, the same `listener`,
+`health` and `app_access` semantics for a Python Module (`uv` + `pyproject.toml`):
 
 ```sh
-uv add "lazurio-module-kit @ git+https://github.com/Lazurio/module-kit@v0.1.0#subdirectory=python"
+uv add "lazurio-module-kit @ git+https://github.com/Lazurio/module-kit@v0.3.0#subdirectory=python"
 ```
 
 ```python
