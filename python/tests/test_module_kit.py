@@ -1,5 +1,6 @@
 import asyncio
 import json
+from collections.abc import Awaitable, Callable
 from typing import Literal
 
 import pytest
@@ -81,8 +82,11 @@ def test_reads_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     assert listener("app").port == 43100
 
 
-def _run(ready: object) -> HealthResponse:
-    return asyncio.run(health(ready)())
+def _run(ready: Callable[[], bool | Awaitable[bool]]) -> HealthResponse:
+    async def check() -> HealthResponse:
+        return await health(ready)()
+
+    return asyncio.run(check())
 
 
 def test_health_ok() -> None:
