@@ -61,7 +61,7 @@ try {
 | `onShutdown(fn, { timeoutMs = 10_000 })` | on `SIGTERM`/`SIGINT`, runs `fn` once and exits 0; exits 1 if `fn` throws or does not finish within `timeoutMs`; returns a function that removes the handlers |
 | `requireEnvironment(names, env)` | the values as a record; throws `environment-missing` naming every absent or empty variable |
 
-| `appAccess(request, id = "app", env)` | who came to the App for this request and with which application role: `{ entry, appRole, person, source }` or, without a person, `{ entry, appRole, person: null, reason }`, see [Who came and with which role](#who-came-and-with-which-role) |
+| `appAccess(request, id = "app", env)` | who came to the App for this request and with which application role: always `{ entry, appRole, person, source, reason }`, see [Who came and with which role](#who-came-and-with-which-role) |
 | `isLazurioUsername(value)` | whether a value is a Lazurio username (3–39 lowercase letters and digits, single dashes between them, not UUID-shaped, not a service account) |
 
 `ModuleKitError.code` is one of `listener-missing`, `listeners-invalid` or
@@ -88,16 +88,22 @@ const mayApprove = access.appRole === "admin"; // the Organization's own rule
 const author = access.person?.subject ?? null; // null: from inside the Environment
 ```
 
-| `entry` | `appRole` | `person` | When |
-| --- | --- | --- | --- |
-| `environment` | `admin` | subject and username | the person has the whole Environment where the App runs |
-| `app` | `admin` or `user` | subject and username | the person has this App only, with the role the Organization gave them |
-| `local` | `admin` | `null` | a request from inside the Environment: a person's own computer (`reason: "not-hosted"`), a sibling or a script on the Environment (`not-through-gateway`), the Environment browser's local entry (`local-entry`) |
-| `unknown` | `null` | `null` | through the gateway without identity (`no-identity`), for example a gateway release without this capability: no role, show "unavailable" |
+Every answer has the same five fields:
 
-`source` is `gateway` today: the Environment's gateway states it from its own
-admission answer after removing every copy a client sent. An identity signed by
-Lazurio Auth for use outside the Environment will come as `source: "auth"`.
+| `entry` | `appRole` | `person` | `source` | `reason` | When |
+| --- | --- | --- | --- | --- | --- |
+| `environment` | `admin` | subject and username | `gateway` | `null` | the person has the whole Environment where the App runs |
+| `app` | `admin` or `user` | subject and username | `gateway` | `null` | the person has this App only, with the role the Organization gave them |
+| `local` | `admin` | `null` | `null` | `not-hosted`, `not-through-gateway`, `local-entry` | from inside the Environment: no gateway in front of the App (a person's own computer), a request to a loopback address (a sibling, a script, an agent), or the Environment browser's local entry |
+| `unknown` | `null` | `null` | `null` | `no-identity` | through the gateway without a valid statement, or a `Host` that is neither the App's hostname nor loopback: no role, show "unavailable" |
+
+`source` says who stated the person: `gateway` today, from its own admission
+answer after removing every copy a client sent; an identity signed by Lazurio
+Auth for use outside the Environment will come as `auth`. A request whose
+`Host` names the App's external hostname, in any letter case, with any port or
+a trailing dot, as the gateway matches it, counts only by the gateway's
+statement; a missing, repeated or malformed statement is `unknown`, never a
+role.
 
 - **Enforce on the server, per request.** Check the role for every request,
   including APIs, downloads, WebSockets and direct URLs, never only by hiding a

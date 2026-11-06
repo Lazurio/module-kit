@@ -374,23 +374,28 @@ export type AppAccess =
       /** Who states it: the Environment's gateway, or later an identity
        * signed by Lazurio Auth for use outside the Environment. */
       source: "gateway" | "auth";
+      reason: null;
     }>
   | Readonly<{
       entry: "app";
       appRole: "admin" | "user";
       person: AppPerson;
       source: "gateway" | "auth";
+      reason: null;
     }>
   | Readonly<{
       entry: "local";
       appRole: "admin";
       person: null;
+      /** No person was stated, so nobody stated it. */
+      source: null;
       reason: "not-hosted" | "not-through-gateway" | "local-entry";
     }>
   | Readonly<{
       entry: "unknown";
       appRole: null;
       person: null;
+      source: null;
       reason: "no-identity";
     }>;
 
@@ -425,57 +430,75 @@ export function isLazurioUsername(value: unknown): value is string {
   );
 }
 
+/** The hostname a `Host` header names, lowercased, without a port and a
+ * trailing dot, as the gateway matches it; null when it names none. */
+function hostnameOf(host: string | null): string | null {
+  if (host === null) return null;
+  const match = /^(\[[^\]]*\]|[^:[\]]*)(?::[0-9]*)?$/.exec(host.trim());
+  const name = match?.[1]?.toLowerCase().replace(/\.$/, "") ?? "";
+  return name === "" ? null : name;
+}
+
+const LOOPBACK_HOST = /^(?:127(?:\.[0-9]{1,3}){3}|localhost|\[::1\])$/;
+
 /** Who came to this App and with which application role, for one request
  * (decision 0231; Lazurio Module Standard, "Who came and with which role").
  *
- * The gateway's statement counts only when the listener has an external
- * origin (`LAZURIO_RUNTIME_LISTENER_<ID>_EXTERNAL_ORIGIN`, a hosted
- * entrypoint) and the request's `Host` is that origin's host; any other
- * request came from inside the Environment and is `local`. Behind the
- * gateway a statement that is missing, repeated or of another form is
- * `unknown`, never an application role. The gateway removes every client
- * copy and admits every request again, so read it per request and never
- * cache it. Inside the Environment the statement holds as far as the
- * Environment does: a process on it that reaches the App's loopback port
- * could send anything, as it could read the App's data (decision 0196).
- * Throws `listener-missing` like `listener(id)`. */
+ * The answer has the same five fields in every case. Without an external
+ * origin (`LAZURIO_RUNTIME_LISTENER_<ID>_EXTERNAL_ORIGIN`) no gateway stands
+ * in front of the App and every request is `local`. With one, a request whose
+ * `Host` names the external origin's hostname, in any letter case and with
+ * any port, as the gateway matches it, counts only by the gateway's statement:
+ * a missing, repeated or malformed statement is `unknown`, never a role. A
+ * request to a loopback address (a sibling, a script, an agent) is `local`;
+ * any other `Host` is `unknown`. The gateway removes every client copy and
+ * admits every request again, so read it per request and never cache it.
+ * Inside the Environment the answer holds as far as the Environment does: a
+ * process on it that reaches the App's loopback port could send anything, as
+ * it could read the App's data (decision 0196), so it is no authentication
+ * boundary inside the Environment. Throws `listener-missing` like
+ * `listener(id)`. */
 export function appAccess(
   request: Request | RequestHeaders,
   id = "app",
   env: Environment = process.env,
 ): AppAccess {
   const { externalOrigin } = listener(id, env);
-  if (externalOrigin === null)
-    return {
-      entry: "local",
-      appRole: "admin",
-      person: null,
-      reason: "not-hosted",
-    };
-  const headers: RequestHeaders =
-    "headers" in request ? request.headers : request;
-  if (headers.get("host") !== new URL(externalOrigin).host)
-    return {
-      entry: "local",
-      appRole: "admin",
-      person: null,
-      reason: "not-through-gateway",
-    };
-  const entry = headers.get(GATEWAY_HEADERS.entry);
-  const subject = headers.get(GATEWAY_HEADERS.subject);
-  if (entry === "local" && subject === null)
-    return {
-      entry: "local",
-      appRole: "admin",
-      person: null,
-      reason: "local-entry",
-    };
+  const local = (
+    reason: "not-hosted" | "not-through-gateway" | "local-entry",
+  ): AppAccess => ({
+    entry: "local",
+    appRole: "admin",
+    person: null,
+    source: null,
+    reason,
+  });
   const unknown: AppAccess = {
     entry: "unknown",
     appRole: null,
     person: null,
+    source: null,
     reason: "no-identity",
   };
+  if (externalOrigin === null) return local("not-hosted");
+  const headers: RequestHeaders =
+    "headers" in request ? request.headers : request;
+  const host = hostnameOf(headers.get("host"));
+  if (host !== hostnameOf(new URL(externalOrigin).host))
+    return host !== null && LOOPBACK_HOST.test(host)
+      ? local("not-through-gateway")
+      : unknown;
+  // Through the gateway: only its statement counts. A repeated header reads
+  // as its values joined with a comma, so it never matches one valid value.
+  const entry = headers.get(GATEWAY_HEADERS.entry);
+  const subject = headers.get(GATEWAY_HEADERS.subject);
+  if (
+    entry === "local" &&
+    subject === null &&
+    headers.get(GATEWAY_HEADERS.username) === null &&
+    headers.get(GATEWAY_HEADERS.appRole) === null
+  )
+    return local("local-entry");
   if (subject === null || !SUBJECT.test(subject)) return unknown;
   const username = headers.get(GATEWAY_HEADERS.username);
   const person: AppPerson = {
@@ -488,11 +511,12 @@ export function appAccess(
       appRole: "admin",
       person,
       source: "gateway",
+      reason: null,
     };
   if (entry === "app") {
     const appRole = headers.get(GATEWAY_HEADERS.appRole);
     if (appRole === "admin" || appRole === "user")
-      return { entry: "app", appRole, person, source: "gateway" };
+      return { entry: "app", appRole, person, source: "gateway", reason: null };
   }
   return unknown;
 }

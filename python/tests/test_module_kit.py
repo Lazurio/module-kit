@@ -115,12 +115,17 @@ def test_health_raising_is_starting() -> None:
 HOST = "deals.vm-01.example.lazurio.io"
 HOSTED = {**APP, "LAZURIO_RUNTIME_LISTENER_APP_EXTERNAL_ORIGIN": f"https://{HOST}"}
 ALENA = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
-UNKNOWN = AppAccess("unknown", None, None, reason="no-identity")
+BOB = "9a8b7c6d-5e4f-4321-8fed-cba987654321"
+UNKNOWN = AppAccess("unknown", None, None, None, "no-identity")
 
 
-def _person(subject: str = ALENA, entry: str = "environment") -> dict[str, str]:
+def _local(reason: Literal["not-hosted", "not-through-gateway", "local-entry"]) -> AppAccess:
+    return AppAccess("local", "admin", None, None, reason)
+
+
+def _person(subject: str = ALENA, entry: str = "environment", host: str = HOST) -> dict[str, str]:
     return {
-        "host": HOST,
+        "host": host,
         GATEWAY_HEADERS["subject"]: subject,
         GATEWAY_HEADERS["username"]: "alena",
         GATEWAY_HEADERS["entry"]: entry,
@@ -135,7 +140,7 @@ def test_whole_environment_is_an_application_admin() -> None:
         "X-Lazurio-Entry": "environment",
     }
     assert app_access(headers, "app", HOSTED) == AppAccess(
-        "environment", "admin", AppPerson(ALENA, "alena"), source="gateway"
+        "environment", "admin", AppPerson(ALENA, "alena"), "gateway", None
     )
 
 
@@ -143,7 +148,7 @@ def test_whole_environment_is_an_application_admin() -> None:
 def test_this_app_only_has_the_stated_role(role: Literal["admin", "user"]) -> None:
     headers = {**_person(entry="app"), GATEWAY_HEADERS["app_role"]: role}
     assert app_access(headers, "app", HOSTED) == AppAccess(
-        "app", role, AppPerson(ALENA, "alena"), source="gateway"
+        "app", role, AppPerson(ALENA, "alena"), "gateway", None
     )
 
 
@@ -155,21 +160,44 @@ def test_this_app_only_without_a_valid_role_is_unknown(role: str | None) -> None
     assert app_access(headers, "app", HOSTED) == UNKNOWN
 
 
+@pytest.mark.parametrize(
+    "host",
+    [
+        "DEALS.VM-01.EXAMPLE.LAZURIO.IO",
+        f"{HOST}:443",
+        f"{HOST}:8443",
+        f"{HOST}.",
+        "Deals.Vm-01.Example.Lazurio.Io.:443",
+    ],
+)
+def test_the_gateway_hostname_in_any_form_counts_only_by_its_statement(host: str) -> None:
+    visitor = {**_person(entry="app", host=host), GATEWAY_HEADERS["app_role"]: "user"}
+    assert app_access(visitor, "app", HOSTED).app_role == "user"
+    assert app_access({"host": host}, "app", HOSTED) == UNKNOWN
+
+
 def test_not_hosted_is_local_whatever_it_carries() -> None:
-    headers = {**_person(entry="app"), "host": "127.0.0.1:43100", GATEWAY_HEADERS["app_role"]: "user"}
-    assert app_access(headers, "app", APP) == AppAccess("local", "admin", None, reason="not-hosted")
+    headers = {**_person(entry="app", host="127.0.0.1:43100"), GATEWAY_HEADERS["app_role"]: "user"}
+    assert app_access(headers, "app", APP) == _local("not-hosted")
 
 
-def test_not_through_the_gateway_is_local() -> None:
-    headers = {**_person(), "host": "127.0.0.1:43100"}
-    assert app_access(headers, "app", HOSTED) == AppAccess(
-        "local", "admin", None, reason="not-through-gateway"
-    )
+@pytest.mark.parametrize(
+    "host", ["127.0.0.1:43100", "127.0.0.1", "localhost:43100", "LOCALHOST", "[::1]:43100"]
+)
+def test_a_loopback_host_is_local(host: str) -> None:
+    assert app_access(_person(host=host), "app", HOSTED) == _local("not-through-gateway")
+
+
+@pytest.mark.parametrize(
+    "host", ["notes.vm-01.example.lazurio.io", f"{HOST}.evil.test", "evil.test", "", "127.0.0.1.evil.test"]
+)
+def test_any_other_host_is_unknown(host: str) -> None:
+    assert app_access(_person(host=host), "app", HOSTED) == UNKNOWN
 
 
 def test_local_entry_is_local_without_a_name() -> None:
     headers = {"host": HOST, GATEWAY_HEADERS["entry"]: "local"}
-    assert app_access(headers, "app", HOSTED) == AppAccess("local", "admin", None, reason="local-entry")
+    assert app_access(headers, "app", HOSTED) == _local("local-entry")
 
 
 @pytest.mark.parametrize(
@@ -183,6 +211,8 @@ def test_local_entry_is_local_without_a_name() -> None:
         _person(ALENA.upper()),
         _person(ALENA + "0"),
         _person("alena"),
+        {"host": HOST, GATEWAY_HEADERS["entry"]: "local", GATEWAY_HEADERS["username"]: "alena"},
+        {"host": HOST, GATEWAY_HEADERS["entry"]: "local", GATEWAY_HEADERS["app_role"]: "user"},
     ],
 )
 def test_missing_or_malformed_statement_is_unknown(headers: dict[str, str]) -> None:
@@ -191,6 +221,26 @@ def test_missing_or_malformed_statement_is_unknown(headers: dict[str, str]) -> N
 
 def test_repeated_subject_is_unknown() -> None:
     headers = {**_person(), "X-Auth-Request-User": ALENA}
+    assert app_access(headers, "app", HOSTED) == UNKNOWN
+
+
+def test_repeated_subject_with_a_local_entry_is_unknown() -> None:
+    headers = {
+        "host": HOST,
+        GATEWAY_HEADERS["entry"]: "local",
+        "x-auth-request-user": ALENA,
+        "X-Auth-Request-User": BOB,
+    }
+    assert app_access(headers, "app", HOSTED) == UNKNOWN
+
+
+def test_repeated_local_entry_is_unknown() -> None:
+    headers = {"host": HOST, "x-lazurio-entry": "local", "X-Lazurio-Entry": "local"}
+    assert app_access(headers, "app", HOSTED) == UNKNOWN
+
+
+def test_repeated_host_is_unknown() -> None:
+    headers = {**_person(), "Host": HOST}
     assert app_access(headers, "app", HOSTED) == UNKNOWN
 
 

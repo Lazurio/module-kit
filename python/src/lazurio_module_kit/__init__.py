@@ -168,20 +168,22 @@ class AppPerson:
 @dataclass(frozen=True)
 class AppAccess:
     """Who came to this App and with which application role (decision 0231);
-    the same contract as ``appAccess`` of the TypeScript package.
+    the same contract as ``appAccess`` of the TypeScript package, with the
+    same five fields in every answer.
 
     ``entry`` is ``environment`` (the whole Environment, so ``app_role`` is
     ``admin``), ``app`` (this App only, with the role the Organization gave),
     ``local`` (a request from inside the Environment: an application admin
-    without a name) or ``unknown`` (through the gateway without identity: no
-    ``app_role``). ``source`` is set with a person, ``reason`` without one.
-    Fields and values never change meaning or disappear."""
+    without a name) or ``unknown`` (no role). With a person ``source`` says
+    who stated it and ``reason`` is ``None``; without one ``source`` is
+    ``None`` and ``reason`` says why. Fields and values never change meaning
+    or disappear."""
 
     entry: Entry
     app_role: AppRole | None
     person: AppPerson | None
-    source: Source | None = None
-    reason: Reason | None = None
+    source: Source | None
+    reason: Reason | None
 
 
 def is_lazurio_username(value: object) -> bool:
@@ -196,10 +198,34 @@ def is_lazurio_username(value: object) -> bool:
     )
 
 
-def _header(headers: Mapping[str, str], name: str) -> str | None:
-    """One header, matched case-insensitively; a repeated one reads as none."""
+class _Repeated:
+    """A header sent more than once: never one valid value."""
+
+
+_REPEATED = _Repeated()
+
+
+def _header(headers: Mapping[str, str], name: str) -> str | _Repeated | None:
+    """One header, matched case-insensitively: its value, ``None`` when absent,
+    ``_REPEATED`` when sent more than once."""
     values = [value for key, value in headers.items() if key.lower() == name]
-    return values[0] if len(values) == 1 else None
+    if not values:
+        return None
+    return values[0] if len(values) == 1 else _REPEATED
+
+
+_HOST = re.compile(r"(\[[^\]]*\]|[^:\[\]]*)(?::[0-9]*)?")
+_LOOPBACK_HOST = re.compile(r"127(?:\.[0-9]{1,3}){3}|localhost|\[::1\]")
+
+
+def _hostname(host: str | _Repeated | None) -> str | None:
+    """The hostname a Host header names, lowercased, without a port and a
+    trailing dot, as the gateway matches it; ``None`` when it names none."""
+    if not isinstance(host, str):
+        return None
+    match = _HOST.fullmatch(host.strip())
+    name = match.group(1).lower().rstrip(".") if match else ""
+    return name or None
 
 
 def app_access(
@@ -208,32 +234,38 @@ def app_access(
     env: Mapping[str, str] | None = None,
 ) -> AppAccess:
     """Who came to this App and with which application role, for one request;
-    the same rules as ``appAccess`` of the TypeScript package. The gateway's
-    statement counts only when the listener has an external origin and the
-    request's Host is that origin's host; any other request is ``local``.
-    Behind the gateway a missing, repeated or malformed statement is
-    ``unknown``, never a role. Read it per request, never cache it. Raises
+    the same rules as ``appAccess`` of the TypeScript package. Without an
+    external origin every request is ``local``. A request whose Host names the
+    external origin's hostname (any letter case, any port) counts only by the
+    gateway's statement, and a missing, repeated or malformed statement is
+    ``unknown``, never a role. A loopback Host is ``local``; any other Host is
+    ``unknown``. Read it per request, never cache it. Raises
     ``listener-missing`` like ``listener``."""
     origin = listener(listener_id, env).external_origin
+    unknown = AppAccess("unknown", None, None, None, "no-identity")
     if origin is None:
-        return AppAccess("local", "admin", None, reason="not-hosted")
-    if _header(headers, "host") != urlsplit(origin).netloc:
-        return AppAccess("local", "admin", None, reason="not-through-gateway")
+        return AppAccess("local", "admin", None, None, "not-hosted")
+    host = _hostname(_header(headers, "host"))
+    if host != _hostname(urlsplit(origin).netloc):
+        if host is not None and _LOOPBACK_HOST.fullmatch(host):
+            return AppAccess("local", "admin", None, None, "not-through-gateway")
+        return unknown
     entry = _header(headers, GATEWAY_HEADERS["entry"])
     subject = _header(headers, GATEWAY_HEADERS["subject"])
-    if entry == "local" and subject is None:
-        return AppAccess("local", "admin", None, reason="local-entry")
-    unknown = AppAccess("unknown", None, None, reason="no-identity")
-    if subject is None or _SUBJECT.fullmatch(subject) is None:
-        return unknown
     username = _header(headers, GATEWAY_HEADERS["username"])
-    person = AppPerson(subject, username if is_lazurio_username(username) else None)
+    role = _header(headers, GATEWAY_HEADERS["app_role"])
+    if entry == "local" and subject is None and username is None and role is None:
+        return AppAccess("local", "admin", None, None, "local-entry")
+    if not isinstance(subject, str) or _SUBJECT.fullmatch(subject) is None:
+        return unknown
+    person = AppPerson(
+        subject, username if isinstance(username, str) and is_lazurio_username(username) else None
+    )
     if entry == "environment":
-        return AppAccess("environment", "admin", person, source="gateway")
+        return AppAccess("environment", "admin", person, "gateway", None)
     if entry == "app":
-        role = _header(headers, GATEWAY_HEADERS["app_role"])
         if role == "admin":
-            return AppAccess("app", "admin", person, source="gateway")
+            return AppAccess("app", "admin", person, "gateway", None)
         if role == "user":
-            return AppAccess("app", "user", person, source="gateway")
+            return AppAccess("app", "user", person, "gateway", None)
     return unknown

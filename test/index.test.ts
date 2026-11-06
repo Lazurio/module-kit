@@ -499,9 +499,9 @@ describe("appAccess", () => {
   const HOST = "deals.vm-01.example.lazurio.io";
   const ALENA = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d";
   const BOB = "9a8b7c6d-5e4f-4321-8fed-cba987654321";
-  const through = (extra: Record<string, string> = {}) =>
+  const through = (extra: Record<string, string> = {}, host = HOST) =>
     new Request(`https://${HOST}/api/me`, {
-      headers: { host: HOST, ...extra },
+      headers: { host, ...extra },
     });
   const person = (subject = ALENA, entry = "environment") => ({
     [GATEWAY_HEADERS.subject]: subject,
@@ -512,8 +512,19 @@ describe("appAccess", () => {
     entry: "unknown",
     appRole: null,
     person: null,
+    source: null,
     reason: "no-identity",
   } as const;
+  const local = (
+    reason: "not-hosted" | "not-through-gateway" | "local-entry",
+  ) =>
+    ({
+      entry: "local",
+      appRole: "admin",
+      person: null,
+      source: null,
+      reason,
+    }) as const;
 
   test("the whole Environment: an application admin with the person", () => {
     expect(appAccess(through(person()), "app", HOSTED)).toEqual({
@@ -521,6 +532,7 @@ describe("appAccess", () => {
       appRole: "admin",
       person: { subject: ALENA, username: "alena" },
       source: "gateway",
+      reason: null,
     });
   });
 
@@ -540,7 +552,24 @@ describe("appAccess", () => {
         appRole,
         person: { subject: ALENA, username: "alena" },
         source: "gateway",
+        reason: null,
       });
+  });
+
+  test("every answer has the same five fields", () => {
+    for (const answer of [
+      appAccess(through(person()), "app", HOSTED),
+      appAccess(through(), "app", HOSTED),
+      appAccess(through({}, "127.0.0.1:43100"), "app", HOSTED),
+      appAccess(through(), "app", APP),
+    ])
+      expect(Object.keys(answer).sort()).toEqual([
+        "appRole",
+        "entry",
+        "person",
+        "reason",
+        "source",
+      ]);
   });
 
   test("this App only without a valid role is unknown, never a role", () => {
@@ -565,6 +594,30 @@ describe("appAccess", () => {
     });
   });
 
+  test("the gateway's hostname in any letter case, with a port or a trailing dot, counts only by its statement", () => {
+    for (const host of [
+      "DEALS.VM-01.EXAMPLE.LAZURIO.IO",
+      `${HOST}:443`,
+      `${HOST}:8443`,
+      `${HOST}.`,
+      `Deals.Vm-01.Example.Lazurio.Io.:443`,
+    ]) {
+      // A visitor with this App only stays a user, never a local admin.
+      expect(
+        appAccess(
+          through(
+            { ...person(ALENA, "app"), [GATEWAY_HEADERS.appRole]: "user" },
+            host,
+          ),
+          "app",
+          HOSTED,
+        ),
+      ).toMatchObject({ entry: "app", appRole: "user" });
+      // Without a statement it is unknown, never local.
+      expect(appAccess(through({}, host), "app", HOSTED)).toEqual(unknown);
+    }
+  });
+
   test("without a gateway every request is local, whatever it carries", () => {
     const forged = new Request("http://127.0.0.1:43100/", {
       headers: {
@@ -573,42 +626,48 @@ describe("appAccess", () => {
         [GATEWAY_HEADERS.appRole]: "user",
       },
     });
-    expect(appAccess(forged, "app", APP)).toEqual({
-      entry: "local",
-      appRole: "admin",
-      person: null,
-      reason: "not-hosted",
-    });
+    expect(appAccess(forged, "app", APP)).toEqual(local("not-hosted"));
   });
 
-  test("a request that did not come through the gateway is local", () => {
-    for (const host of ["127.0.0.1:43100", "notes.vm-01.example.lazurio.io"])
+  test("a request to a loopback address is local", () => {
+    for (const host of [
+      "127.0.0.1:43100",
+      "127.0.0.1",
+      "localhost:43100",
+      "LOCALHOST",
+      "[::1]:43100",
+    ])
       expect(
         appAccess(
-          new Request(`http://${host}/`, { headers: { host, ...person() } }),
+          new Request("http://127.0.0.1:43100/", {
+            headers: { host, ...person() },
+          }),
           "app",
           HOSTED,
         ),
-      ).toEqual({
-        entry: "local",
-        appRole: "admin",
-        person: null,
-        reason: "not-through-gateway",
-      });
+      ).toEqual(local("not-through-gateway"));
+  });
+
+  test("any other Host is unknown, never local", () => {
+    for (const host of [
+      "notes.vm-01.example.lazurio.io",
+      "deals.vm-01.example.lazurio.io.evil.test",
+      "evil.test",
+      "",
+      "127.0.0.1.evil.test",
+    ])
+      expect(appAccess(through(person(), host), "app", HOSTED)).toEqual(
+        unknown,
+      );
   });
 
   test("the Environment browser's local entry is local without a name", () => {
     expect(
       appAccess(through({ [GATEWAY_HEADERS.entry]: "local" }), "app", HOSTED),
-    ).toEqual({
-      entry: "local",
-      appRole: "admin",
-      person: null,
-      reason: "local-entry",
-    });
+    ).toEqual(local("local-entry"));
   });
 
-  test("through the gateway, a missing or malformed statement is unknown", () => {
+  test("through the gateway, a missing, repeated or malformed statement is unknown", () => {
     const cases: Record<string, string>[] = [
       {},
       { [GATEWAY_HEADERS.subject]: ALENA },
@@ -620,9 +679,24 @@ describe("appAccess", () => {
       person("alena"),
       person(`${ALENA}, ${BOB}`),
       { ...person(), [GATEWAY_HEADERS.entry]: "environment, app" },
+      { [GATEWAY_HEADERS.entry]: "local, local" },
+      {
+        [GATEWAY_HEADERS.entry]: "local",
+        [GATEWAY_HEADERS.username]: "alena",
+      },
+      {
+        [GATEWAY_HEADERS.entry]: "local",
+        [GATEWAY_HEADERS.appRole]: "user",
+      },
     ];
     for (const headers of cases)
       expect(appAccess(through(headers), "app", HOSTED)).toEqual(unknown);
+    // A repeated subject next to a local entry is no local entry.
+    const repeated = new Headers({ host: HOST });
+    repeated.append(GATEWAY_HEADERS.entry, "local");
+    repeated.append(GATEWAY_HEADERS.subject, ALENA);
+    repeated.append(GATEWAY_HEADERS.subject, BOB);
+    expect(appAccess(repeated, "app", HOSTED)).toEqual(unknown);
   });
 
   test("a username outside the Lazurio rule is no username", () => {
