@@ -122,6 +122,16 @@ role.
   gateway uses today so that a Module's own tests can build requests; read them
   only through `appAccess`.
 
+**Proof through the real gateway.** `bun proof/gateway.ts <Machines checkout>`
+renders the Lazurio workspace gateway from a Machines checkout, runs it with
+Caddy in front of a TypeScript App and a Python App and checks every Host form
+a client can send: the App's hostname as is, in upper case, with `:443` or
+another port (the gateway's statement counts: `environment`/admin with a
+person, `unknown` without one, nothing without a session) and with a trailing
+dot (refused by the gateway itself). A client's forged statement never counts
+and no request through the gateway is `local`. It needs Caddy, OpenSSL and uv,
+so it is not part of `bun test`.
+
 Python: `app_access(headers, "app")` takes the request headers as a mapping
 (matched case-insensitively; a repeated header reads as none) and returns
 `AppAccess(entry, app_role, person, source, reason)` with

@@ -4,6 +4,7 @@
     "includes": [
       "src/**/*.ts",
       "test/**/*.ts",
+      "proof/**/*.ts",
       "package.json",
       "tsconfig.json",
       "biome.json"
