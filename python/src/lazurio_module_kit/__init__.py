@@ -171,13 +171,15 @@ class AppAccess:
     the same contract as ``appAccess`` of the TypeScript package, with the
     same five fields in every answer.
 
-    ``entry`` is ``environment`` (the whole Environment, so ``app_role`` is
-    ``admin``), ``app`` (this App only, with the role the Organization gave),
-    ``local`` (a request from inside the Environment: an application admin
-    without a name) or ``unknown`` (no role). With a person ``source`` says
-    who stated it and ``reason`` is ``None``; without one ``source`` is
-    ``None`` and ``reason`` says why. Fields and values never change meaning
-    or disappear."""
+    ``app_role`` carries the application role of decision 0234 as a stable
+    value: ``admin`` is the Application Admin and ``user`` the Application
+    User. ``entry`` is ``environment`` (the whole Environment, so ``app_role``
+    is ``admin``), ``app`` (this App only, with the application role the
+    Organization gave), ``local`` (a request from inside the Environment: an
+    Application Admin without a name) or ``unknown`` (no role). With a person
+    ``source`` says who stated it and ``reason`` is ``None``; without one
+    ``source`` is ``None`` and ``reason`` says why. Fields and values never
+    change meaning or disappear."""
 
     entry: Entry
     app_role: AppRole | None

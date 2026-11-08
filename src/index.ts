@@ -354,16 +354,18 @@ export type AppPerson = Readonly<{
  * change meaning or disappear, and new information comes as new fields.
  *
  * - `environment`: the person has the whole Environment where the App runs,
- *   so they are an application admin.
+ *   so they are an Application Admin.
  * - `app`: the person has this App only, with the application role the
  *   Organization gave them.
  * - `local`: a request from inside the Environment (a person's own computer
  *   with no gateway, a sibling or a script on the Environment, or the
- *   Environment browser's local entry): an application admin without a name.
+ *   Environment browser's local entry): an Application Admin without a name.
  * - `unknown`: a request that came through the gateway without identity
  *   (a gateway without this capability): no application role at all.
  *
- * What application admin and application user may do is the Organization's
+ * `appRole` carries the application role of decision 0234 as a stable value:
+ * `"admin"` is the Application Admin and `"user"` the Application User. What
+ * an Application Admin and an Application User may do is the Organization's
  * rule in the Module's code, enforced on the server for every request. The
  * answer is no key to data and signs nothing. */
 export type AppAccess =
