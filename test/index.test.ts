@@ -526,7 +526,7 @@ describe("appAccess", () => {
       reason,
     }) as const;
 
-  test("the whole Environment: an application admin with the person", () => {
+  test("the whole Environment: an Application Admin with the person", () => {
     expect(appAccess(through(person()), "app", HOSTED)).toEqual({
       entry: "environment",
       appRole: "admin",
@@ -602,7 +602,8 @@ describe("appAccess", () => {
       `${HOST}.`,
       `Deals.Vm-01.Example.Lazurio.Io.:443`,
     ]) {
-      // A visitor with this App only stays a user, never a local admin.
+      // A visitor with this App only stays an Application User, never a local
+      // Application Admin.
       expect(
         appAccess(
           through(

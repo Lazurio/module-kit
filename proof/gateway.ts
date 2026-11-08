@@ -3,7 +3,7 @@
 // front of two Apps, one reading `appAccess` (TypeScript) and one reading
 // `app_access` (Python). It shows that a request through the gateway, with
 // the App's hostname in any letter case, with a port or a trailing dot,
-// counts only by the gateway's statement: a person is `environment`/admin, an
+// counts only by the gateway's statement: a person is `environment`/`admin`, an
 // admitted session without a person is `unknown`, a client's forged statement
 // never counts, and no such request is ever `local`.
 //
