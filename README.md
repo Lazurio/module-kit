@@ -2,17 +2,18 @@
 
 Runtime helpers for Apps that follow the **Lazurio Module Standard**: read the
 listener a Lazurio Platform assigned, answer health, shut down cleanly on
-`SIGTERM`, and learn who came to the App and with which application role.
+`SIGTERM`, learn who came to the App and with which application role, and
+offer the App's tools to agents through `/mcp` and WebMCP.
 
 This is the **only shared runtime library of a Module**. It stays small on
 purpose: reading the runtime environment, health, shutdown and dev server
-options. It is not a framework, it has no runtime dependencies, and anything
-beyond that belongs in the Module itself.
+options, and the one tool contract for agents. It is not a framework, it has
+no runtime dependencies, and anything beyond that belongs in the Module itself.
 
 ## Install
 
 ```sh
-bun add github:Lazurio/module-kit#v0.3.0
+bun add github:Lazurio/module-kit#v0.4.0
 ```
 
 The package ships TypeScript sources (`exports` and `types` point at
@@ -141,6 +142,104 @@ Python: `app_access(headers, "app")` takes the request headers as a mapping
 `AppPerson(subject, username)` or `None`, by the same rules; `app_role` takes
 the same values, `"admin"` for the Application Admin and `"user"` for the
 Application User.
+
+## Tools for agents
+
+An App defines its tools once, on its server, and offers them through two
+transports over the same handler (Module Standard, "Agents in the App"):
+
+- `/mcp`: a stateless MCP server (Streamable HTTP, JSON answers, POST only, no
+  batches, body bounded to 64 KiB) behind the Application host's gateway, which
+  admits a Lazurio Auth Bearer token with the application's role;
+- the page: `GET /api/agent-tools` lists the tools for the person who has the
+  page open and `POST /api/agent-tools/<name>` calls one with the page's own
+  session (only from the App's own origin). `@lazurio/module-kit/webmcp`
+  registers them as WebMCP tools, so an agent with the App open in the
+  Environment browser calls them directly.
+
+Both read who came only through `appAccess`, list only the tools the role and
+the writer mode allow, and refuse with the same codes. Every registry also
+answers `get_app_context`: module, version, data generation, `production` or
+`environment`, entry, role and whether the caller may change data now.
+
+```ts
+import { z } from "zod";
+import { createToolRegistry, defineTool } from "@lazurio/module-kit/tools";
+
+const FindInput = z.strictObject({ query: z.string().max(200) });
+
+const registry = createToolRegistry({
+  app: { module: "revisions", version: "1.4.0", dataGeneration: "v3" },
+  tools: [
+    defineTool({
+      name: "find_revisions",
+      description: "Najde revize podle čísla, zákazníka nebo adresy.",
+      input: FindInput,
+      inputSchema: z.toJSONSchema(FindInput, { io: "input" }),
+      minRole: "user",
+      effect: "read",
+      untrustedContent: true,
+      // The same domain service the interface calls, never the data files.
+      run: async ({ query }, { access }) => ({
+        ok: true,
+        data: { items: await revisions.find(query, access) },
+      }),
+    }),
+  ],
+});
+
+Bun.serve({
+  hostname: host,
+  port,
+  fetch: withHealth(async (request) => {
+    const path = new URL(request.url).pathname;
+    if (path === "/mcp") return registry.handleMcp(request);
+    return (await registry.handlePage(request)) ?? app(request);
+  }),
+});
+```
+
+On the page:
+
+```ts
+import { registerAgentTools } from "@lazurio/module-kit/webmcp";
+
+const tools = await registerAgentTools({
+  // View tools of the page never change data.
+  viewTools: [{ name: "open_revision", description: "Otevře revizi.",
+    inputSchema: { type: "object", properties: { id: { type: "string" } } },
+    execute: ({ id }) => router.open(id) }],
+});
+// After a sign-in or a role change: await tools.refresh();
+```
+
+**Effects.** `read` changes nothing (finding, reading, computing, producing a
+file such as a PDF) and is offered in the read-only mode as well. `prepare`
+changes no shared data and prepares a step a person completes in the interface
+(an approval, a signature, a sending). `write` changes data and says with
+`publishesData` whether the change is a publication of data (a commit and push
+in repository-db, `DOLT_COMMIT` in a database) or a draft. A write is offered
+only while `dataWriter` allows it (`LAZURIO_RUNTIME_DATA_WRITER=true`; unset
+only to a local or Environment entry), and a write that publishes data is not
+offered in a production application: there a person publishes in the
+interface. No tool completes an approval, a signature, a sending, a deletion
+or a person's confirmation.
+
+**Answers and refusals.** A tool returns `{ ok: true, data, files? }` or
+`{ ok: false, reason, message, current_revision?, details? }` and never throws
+for an expected outcome. The common reasons are `identity_unavailable`,
+`forbidden`, `unknown_tool`, `invalid_input`, `not_found`, `record_changed`
+(with `current_revision`), `data_read_only`, `unavailable` and
+`internal_error`; a Module adds domain reasons of its own. On `/mcp` a refusal
+is a tool result with `isError` and `structuredContent`; a file is an embedded
+resource. Every call writes one audit line (channel, tool, entry, subject,
+role, outcome, duration), never the input or the answer.
+
+**Tests.** `@lazurio/module-kit/tools/testing` builds requests as the gateway
+states them (`gatewayRequest`, `hostedEnvironment`, `localEnvironment`) and
+calls the registry (`mcpCall`, `mcpToolNames`, `mcpTool`, `pageTool`), so a
+Module tests the list per role, the refusal without a role, writes in the
+read-only mode and `record_changed` on both transports.
 
 ## Bun.serve
 
