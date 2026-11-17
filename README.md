@@ -13,11 +13,8 @@ no runtime dependencies, and anything beyond that belongs in the Module itself.
 ## Install
 
 ```sh
-bun add github:Lazurio/module-kit#v0.3.0
+bun add github:Lazurio/module-kit#v0.4.0
 ```
-
-The tools for agents (`/tools`, `/tools/testing`, `/webmcp`) come with the next
-release; until it is tagged, `v0.3.0` has no tools.
 
 The package ships TypeScript sources (`exports` and `types` point at
 `src/index.ts`). Bun runs them natively and there is no build step. The source
