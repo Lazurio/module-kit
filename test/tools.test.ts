@@ -597,3 +597,154 @@ describe("page transport", () => {
     ]);
   });
 });
+
+describe("review of #6: origin boundary and failing validators", () => {
+  const local = registry(localEnvironment());
+  const localRequest = (
+    path: string,
+    origin: string | null,
+    contentType: string,
+    body: string,
+  ) =>
+    new Request(`http://127.0.0.1:43100${path}`, {
+      method: "POST",
+      headers: {
+        host: "127.0.0.1:43100",
+        "content-type": contentType,
+        ...(origin === null ? {} : { origin }),
+      },
+      body,
+    });
+  const draft = JSON.stringify({ id: "r1", title: "x", base_revision: "a" });
+
+  test("a page on another loopback port cannot call a local App", async () => {
+    for (const contentType of ["text/plain", "application/json"])
+      for (const origin of [
+        "http://localhost:9999",
+        "http://127.0.0.1:9999",
+        "https://127.0.0.1:43100",
+        "http://127.0.0.2:43100",
+      ]) {
+        const response = await local.handlePage(
+          localRequest(
+            "/api/agent-tools/save_record_draft",
+            origin,
+            contentType,
+            draft,
+          ),
+        );
+        expect([origin, contentType, response?.status]).toEqual([
+          origin,
+          contentType,
+          403,
+        ]);
+      }
+  });
+
+  test("the local App's own origin may call it, as JSON only", async () => {
+    for (const origin of [
+      "http://127.0.0.1:43100",
+      "http://localhost:43100",
+      "http://[::1]:43100",
+    ]) {
+      const ok = await local.handlePage(
+        localRequest(
+          "/api/agent-tools/save_record_draft",
+          origin,
+          "application/json; charset=utf-8",
+          draft,
+        ),
+      );
+      expect([origin, ok?.status]).toEqual([origin, 200]);
+    }
+    const plain = await local.handlePage(
+      localRequest(
+        "/api/agent-tools/save_record_draft",
+        "http://127.0.0.1:43100",
+        "text/plain",
+        draft,
+      ),
+    );
+    expect(plain?.status).toBe(415);
+  });
+
+  test("a hosted page call as text/plain is refused", async () => {
+    const response = await writer.handlePage(
+      gatewayRequest("/api/agent-tools/find_records", {
+        origin: TEST_ORIGIN,
+        body: JSON.stringify({ query: "R" }),
+        headers: { "content-type": "text/plain" },
+      }),
+    );
+    expect(response?.status).toBe(415);
+  });
+
+  test("/mcp keeps the same origin boundary locally", async () => {
+    const ping = JSON.stringify({ jsonrpc: "2.0", id: 1, method: "ping" });
+    const foreign = await local.handleMcp(
+      localRequest("/mcp", "http://localhost:9999", "application/json", ping),
+    );
+    expect(foreign.status).toBe(403);
+    const own = await local.handleMcp(
+      localRequest("/mcp", "http://localhost:43100", "application/json", ping),
+    );
+    expect(own.status).toBe(200);
+    const none = await local.handleMcp(
+      localRequest("/mcp", null, "application/json", ping),
+    );
+    expect(none.status).toBe(200);
+    const plain = await local.handleMcp(
+      localRequest("/mcp", null, "text/plain; x=json", ping),
+    );
+    expect(plain.status).toBe(415);
+  });
+
+  for (const [label, validate] of [
+    [
+      "throws",
+      () => {
+        throw new Error("validator detail");
+      },
+    ],
+    ["rejects", () => Promise.reject(new Error("validator detail"))],
+  ] as const) {
+    test(`a validator that ${label} is internal_error, audited, on both transports`, async () => {
+      const audit: ToolAuditEvent[] = [];
+      const broken = defineTool({
+        name: "broken_input",
+        description: "Rozbitý validátor.",
+        input: {
+          "~standard": { version: 1, vendor: "test", validate },
+        } as StandardSchemaV1<unknown, Record<string, never>>,
+        inputSchema: schema(),
+        minRole: "user",
+        effect: "read",
+        run: () => ({ ok: true, data: {} }),
+      });
+      const audited = registry(hostedEnvironment({ writer: true }), audit, {
+        tools: [broken as ToolDefinition<unknown>],
+      });
+      const errors: string[] = [];
+      const original = console.error;
+      console.error = (line: string) => errors.push(line);
+      try {
+        const viaMcp = await mcpTool(audited, "broken_input", {});
+        expect(viaMcp.structured).toEqual({
+          ok: false,
+          reason: "internal_error",
+          message: "The tool failed.",
+        });
+        const viaPage = await pageTool(audited, "broken_input", {});
+        expect(viaPage.status).toBe(500);
+        expect(viaPage.body.reason).toBe("internal_error");
+      } finally {
+        console.error = original;
+      }
+      expect(audit.map((event) => [event.channel, event.outcome])).toEqual([
+        ["mcp", "internal_error"],
+        ["webmcp", "internal_error"],
+      ]);
+      expect(errors.join("\n")).not.toContain("validator detail");
+    });
+  }
+});

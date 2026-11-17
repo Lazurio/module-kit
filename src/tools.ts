@@ -375,7 +375,12 @@ function base64(data: Uint8Array): string {
   return btoa(binary);
 }
 
-const LOOPBACK = /^(?:127(?:\.[0-9]{1,3}){3}|localhost|\[::1\])$/;
+/** Whether the body is declared as JSON (`application/json`, any
+ * parameters). */
+function isJson(request: Request): boolean {
+  const type = request.headers.get("content-type") ?? "";
+  return type.split(";")[0]?.trim().toLowerCase() === "application/json";
+}
 
 class BodyTooLarge extends Error {}
 
@@ -432,16 +437,23 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
       throw new TypeError(`Tool defined twice: ${tool.name}`);
     tools.set(tool.name, tool as ToolDefinition<unknown>);
   }
-  const externalOrigin = listener(listenerId, env).externalOrigin;
-  const ownOrigin =
-    externalOrigin === null ? null : new URL(externalOrigin).origin;
+  const own = listener(listenerId, env);
+  /** The origins this App itself is served from: its external origin behind
+   * a gateway, else its own loopback listener (scheme, host and port). */
+  const ownOrigins: ReadonlySet<string> = new Set(
+    own.externalOrigin !== null
+      ? [new URL(own.externalOrigin).origin]
+      : ["127.0.0.1", "localhost", "[::1]"].map(
+          (host) => `http://${host}:${own.port}`,
+        ),
+  );
 
-  /** Whether an `Origin` names this App: its external origin, or a loopback
-   * origin when no gateway stands in front of it. */
+  /** Whether an `Origin` is exactly one of this App's own origins; anything
+   * else, including another port on the same computer, is refused. */
   const originAllowed = (origin: string): boolean => {
-    if (ownOrigin !== null) return origin === ownOrigin;
     try {
-      return LOOPBACK.test(new URL(origin).hostname);
+      const parsed = new URL(origin);
+      return parsed.origin === origin && ownOrigins.has(origin);
     } catch {
       return false;
     }
@@ -513,7 +525,22 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
     const where = deployment(env);
     const blocked = barrier(tool, access, canWrite, where);
     if (blocked !== null) return finish(blocked);
-    const parsed = await tool.input["~standard"].validate(raw ?? {});
+    let parsed: Awaited<
+      ReturnType<(typeof tool.input)["~standard"]["validate"]>
+    >;
+    try {
+      parsed = await tool.input["~standard"].validate(raw ?? {});
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          event: "agent-tool-error",
+          tool: name,
+          stage: "input",
+          error: error instanceof Error ? error.name : "unknown",
+        }),
+      );
+      return finish(refusal("internal_error", "The tool failed."));
+    }
     if (parsed.issues !== undefined)
       return finish(
         refusal("invalid_input", "The input does not match the tool.", {
@@ -590,8 +617,7 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
       !(MCP_PROTOCOL_VERSIONS as readonly string[]).includes(version)
     )
       return rpcError(null, -32600, "Unsupported MCP protocol version.", 400);
-    if (!(request.headers.get("content-type") ?? "").includes("json"))
-      return json({ error: "unsupported_media_type" }, 415);
+    if (!isJson(request)) return json({ error: "unsupported_media_type" }, 415);
     let text: string;
     try {
       text = await readBody(request, maxBody);
@@ -715,6 +741,9 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
     const origin = request.headers.get("origin");
     if (origin === null || !originAllowed(origin))
       return json({ error: "origin_not_allowed" }, 403);
+    // A cross-site page could send a simple `text/plain` POST without a
+    // preflight; the page sends JSON.
+    if (!isJson(request)) return json({ error: "unsupported_media_type" }, 415);
     if (!known(access))
       return json(
         refusal("identity_unavailable", "Lazurio did not say who came."),
