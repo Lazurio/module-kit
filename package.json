@@ -1,7 +1,7 @@
 {
   "name": "@lazurio/module-kit",
-  "version": "0.3.0",
-  "description": "Lazurio Module Standard runtime helpers: listener, health, shutdown, app access",
+  "version": "0.4.0",
+  "description": "Lazurio Module Standard runtime helpers: listener, health, shutdown, app access, tools for agents",
   "license": "MIT",
   "type": "module",
   "packageManager": "bun@1.4.2",
@@ -13,6 +13,18 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./tools": {
+      "types": "./src/tools.ts",
+      "default": "./src/tools.ts"
+    },
+    "./tools/testing": {
+      "types": "./src/tools-testing.ts",
+      "default": "./src/tools-testing.ts"
+    },
+    "./webmcp": {
+      "types": "./src/webmcp.ts",
+      "default": "./src/webmcp.ts"
     }
   },
   "types": "./src/index.ts",
