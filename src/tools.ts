@@ -222,6 +222,9 @@ export interface ToolRegistryOptions {
   readonly env?: Environment;
   /** The page endpoints' path (default `/api/agent-tools`). */
   readonly pagePath?: string;
+  /** The MCP endpoint's path (default `/mcp`), which `effectOf` classifies
+   * as MCP. */
+  readonly mcpPath?: string;
   /** Upper bound of a request body (default 64 KiB). */
   readonly maxBodyBytes?: number;
   /** Upper bound of the files of one answer (default 10 MiB). */
@@ -382,6 +385,17 @@ function base64(data: Uint8Array): string {
   return btoa(binary);
 }
 
+/** A tool name from a page path segment, or null when it is not one (a
+ * malformed percent escape, a slash). */
+function toolNameOf(segment: string): string | null {
+  try {
+    const name = decodeURIComponent(segment);
+    return TOOL_NAME.test(name) ? name : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Whether the body is declared as JSON (`application/json`, any
  * parameters). */
 function isJson(request: Request): boolean {
@@ -431,6 +445,7 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
   const env = options.env ?? process.env;
   const listenerId = options.listener ?? "app";
   const pagePath = (options.pagePath ?? "/api/agent-tools").replace(/\/$/, "");
+  const mcpPath = (options.mcpPath ?? "/mcp").replace(/\/$/, "");
   const maxBody = options.maxBodyBytes ?? 64 * 1024;
   const maxFiles = options.maxFileBytes ?? 10 * 1024 * 1024;
   const audit =
@@ -756,7 +771,9 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
         refusal("identity_unavailable", "Lazurio did not say who came."),
         403,
       );
-    const name = decodeURIComponent(path.slice(pagePath.length + 1));
+    const name = toolNameOf(path.slice(pagePath.length + 1));
+    if (name === null)
+      return json(refusal("unknown_tool", "This App has no such tool."), 404);
     let raw: unknown;
     try {
       const text = await readBody(request, maxBody);
@@ -788,9 +805,11 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
     if (path === pagePath) return "read";
     if (path.startsWith(`${pagePath}/`)) {
       if (request.method !== "POST") return "read";
-      const name = decodeURIComponent(path.slice(pagePath.length + 1));
-      return tools.get(name)?.effect ?? null;
+      const name = toolNameOf(path.slice(pagePath.length + 1));
+      return name === null ? null : (tools.get(name)?.effect ?? null);
     }
+    // Only the MCP endpoint is MCP; any other path is not a tool request.
+    if (path !== mcpPath) return null;
     if (request.method !== "POST") return "read";
     let message: unknown;
     try {

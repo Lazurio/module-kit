@@ -805,3 +805,43 @@ describe("effectOf", () => {
     expect(await writer.effectOf(post("/api/agent-tools/nope", {}))).toBeNull();
   });
 });
+
+describe("review of #6 round 3: effectOf only for tool requests", () => {
+  const post = (path: string, body: unknown) =>
+    gatewayRequest(path, { body, origin: TEST_ORIGIN });
+  test("an ordinary App request is not a tool request", async () => {
+    expect(
+      await writer.effectOf(post("/api/records", { title: "changed" })),
+    ).toBeNull();
+    expect(
+      await writer.effectOf(
+        post("/api/records", { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      ),
+    ).toBeNull();
+    expect(await writer.effectOf(gatewayRequest("/api/records"))).toBeNull();
+    expect(
+      await writer.effectOf(post("/mcp/extra", { method: "ping" })),
+    ).toBeNull();
+  });
+  test("a malformed page tool path is null, and the page answers unknown_tool", async () => {
+    expect(await writer.effectOf(post("/api/agent-tools/%ZZ", {}))).toBeNull();
+    expect(
+      await writer.effectOf(post("/api/agent-tools/a%2Fb", {})),
+    ).toBeNull();
+    const response = await writer.handlePage(post("/api/agent-tools/%ZZ", {}));
+    expect(response?.status).toBe(404);
+  });
+  test("a custom MCP path is the one classified", async () => {
+    const custom = registry(hostedEnvironment({ writer: true }), [], {
+      mcpPath: "/agents/mcp",
+    });
+    const call = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "save_record_draft" },
+    };
+    expect(await custom.effectOf(post("/agents/mcp", call))).toBe("write");
+    expect(await custom.effectOf(post("/mcp", call))).toBeNull();
+  });
+});
