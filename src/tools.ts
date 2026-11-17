@@ -237,6 +237,13 @@ export interface ToolRegistry {
   handlePage(request: Request): Promise<Response | null>;
   /** The tools this access may see now. */
   list(access: AppAccess): readonly ToolDescriptor[];
+  /** What a request to `/mcp` or to the page endpoints does to the data,
+   * read from a copy of the request, so a data layer that decides by the
+   * HTTP method (every tool call is a `POST`) can decide by the tool:
+   * `tools/call` and a page call give the named tool's effect, every other
+   * MCP method and the manifest are `read`, and `null` means not a tool
+   * request, an unknown tool or an unreadable body (treat it as a write). */
+  effectOf(request: Request): Promise<ToolEffect | null>;
 }
 
 const TOOL_NAME = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
@@ -776,5 +783,36 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
     });
   };
 
-  return { handleMcp, handlePage, list };
+  const effectOf = async (request: Request): Promise<ToolEffect | null> => {
+    const path = new URL(request.url).pathname.replace(/\/$/, "");
+    if (path === pagePath) return "read";
+    if (path.startsWith(`${pagePath}/`)) {
+      if (request.method !== "POST") return "read";
+      const name = decodeURIComponent(path.slice(pagePath.length + 1));
+      return tools.get(name)?.effect ?? null;
+    }
+    if (request.method !== "POST") return "read";
+    let message: unknown;
+    try {
+      message = JSON.parse(await readBody(request.clone(), maxBody));
+    } catch {
+      return null;
+    }
+    if (
+      message === null ||
+      typeof message !== "object" ||
+      Array.isArray(message)
+    )
+      return null;
+    const { method, params } = message as {
+      method?: unknown;
+      params?: { name?: unknown };
+    };
+    if (method !== "tools/call") return "read";
+    return typeof params?.name === "string"
+      ? (tools.get(params.name)?.effect ?? null)
+      : null;
+  };
+
+  return { handleMcp, handlePage, list, effectOf };
 }

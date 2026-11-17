@@ -144,12 +144,13 @@ export async function mcpTool(
   name: string,
   input: unknown,
   caller: GatewayCaller = { role: "user" },
+  appOrigin?: string,
 ): Promise<{ isError: boolean; structured: Record<string, unknown> }> {
   const { body } = await mcpCall(
     registry,
     "tools/call",
     { name, arguments: input },
-    { caller },
+    { caller, ...(appOrigin === undefined ? {} : { appOrigin }) },
   );
   const result = body.result as
     | { isError: boolean; structuredContent: Record<string, unknown> }

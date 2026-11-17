@@ -748,3 +748,60 @@ describe("review of #6: origin boundary and failing validators", () => {
     });
   }
 });
+
+describe("effectOf", () => {
+  const post = (path: string, body: unknown) =>
+    gatewayRequest(path, { body, origin: TEST_ORIGIN });
+  test("a tool call has its tool's effect, and the request stays readable", async () => {
+    const request = post("/mcp", {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "save_record_draft", arguments: {} },
+    });
+    expect(await writer.effectOf(request)).toBe("write");
+    expect(((await request.json()) as { method: string }).method).toBe(
+      "tools/call",
+    );
+    expect(
+      await writer.effectOf(
+        post("/mcp", {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "export_record_pdf" },
+        }),
+      ),
+    ).toBe("read");
+    expect(
+      await writer.effectOf(
+        post("/api/agent-tools/prepare_record_approval", {}),
+      ),
+    ).toBe("prepare");
+    expect(
+      await writer.effectOf(post("/api/agent-tools/save_record", {})),
+    ).toBe("write");
+  });
+  test("other MCP methods and the manifest read; unknown is null", async () => {
+    expect(
+      await writer.effectOf(
+        post("/mcp", { jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      ),
+    ).toBe("read");
+    expect(await writer.effectOf(gatewayRequest("/api/agent-tools"))).toBe(
+      "read",
+    );
+    expect(
+      await writer.effectOf(
+        post("/mcp", {
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: { name: "nope" },
+        }),
+      ),
+    ).toBeNull();
+    expect(await writer.effectOf(post("/mcp", "{not json"))).toBeNull();
+    expect(await writer.effectOf(post("/api/agent-tools/nope", {}))).toBeNull();
+  });
+});

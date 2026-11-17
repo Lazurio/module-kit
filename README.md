@@ -238,6 +238,13 @@ is a tool result with `isError` and `structuredContent`; a file is an embedded
 resource. Every call writes one audit line (channel, tool, entry, subject,
 role, outcome, duration), never the input or the answer.
 
+**A data layer that decides by the method.** Every tool call is a `POST`.
+An App whose data layer chooses a read or a write path by the HTTP method asks
+`registry.effectOf(request)` instead: the named tool's effect for `tools/call`
+and page calls, `read` for other MCP methods and the manifest, `null` (treat as
+a write) for anything it cannot tell. It reads a copy, so the request stays
+readable.
+
 **Tests.** `@lazurio/module-kit/tools/testing` builds requests as the gateway
 states them (`gatewayRequest`, `hostedEnvironment`, `localEnvironment`) and
 calls the registry (`mcpCall`, `mcpToolNames`, `mcpTool`, `pageTool`), so a
