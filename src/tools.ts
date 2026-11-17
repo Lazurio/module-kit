@@ -157,8 +157,20 @@ interface ToolDefinitionBase<Input> {
 /** One tool of the App. */
 export type ToolDefinition<Input = unknown> = ToolDefinitionBase<Input> &
   (
-    | { readonly effect: "read" | "prepare"; readonly publishesData?: never }
-    | { readonly effect: "write"; readonly publishesData: boolean }
+    | {
+        readonly effect: "read" | "prepare";
+        readonly publishesData?: never;
+        readonly publicationConsent?: never;
+      }
+    | {
+        readonly effect: "write";
+        readonly publishesData: boolean;
+        /** For a write that publishes data in a production application: where
+         * the Owner decided in advance that agents publish this kind of record
+         * (a plan or decision reference). That is the person's prior consent
+         * to the Publication; without it the tool is not offered there. */
+        readonly publicationConsent?: string;
+      }
   );
 
 /** Types a tool from its input schema. */
@@ -499,7 +511,11 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
         "data_read_only",
         "This App does not change data now (read-only mode).",
       );
-    if (tool.publishesData === true && where === "production")
+    if (
+      tool.publishesData === true &&
+      where === "production" &&
+      (tool.publicationConsent ?? "").trim() === ""
+    )
       return refusal(
         "forbidden",
         `${tool.name} would publish data; in a production application a person publishes in the interface.`,

@@ -225,7 +225,10 @@ in repository-db, `DOLT_COMMIT` in a database) or a draft. A write is offered
 only while `dataWriter` allows it (`LAZURIO_RUNTIME_DATA_WRITER=true`; unset
 only to a local or Environment entry), and a write that publishes data is not
 offered in a production application: there a person publishes in the
-interface. No tool completes an approval, a signature, a sending, a deletion
+interface. The one exception is a kind of record for which the Owner allowed
+agents to publish in advance, with the decision recorded: such a tool names it
+in `publicationConsent` (a plan or decision reference), which is the person's
+prior consent to that Publication. No tool completes an approval, a signature, a sending, a deletion
 or a person's confirmation.
 
 **Answers and refusals.** A tool returns `{ ok: true, data, files? }` or
