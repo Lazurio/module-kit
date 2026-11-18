@@ -895,3 +895,66 @@ describe("review of #6 round 3: effectOf only for tool requests", () => {
     expect(await custom.effectOf(post("/mcp", call))).toBeNull();
   });
 });
+
+describe("dataWriter in a runtime that states production (#9)", () => {
+  const entries = [
+    { entry: "local", appRole: "admin" },
+    { entry: "environment", appRole: "admin" },
+    { entry: "app", appRole: "admin" },
+    { entry: "app", appRole: "user" },
+    { entry: "unknown", appRole: null },
+  ] as const;
+  test("without the writer variable no entry writes", () => {
+    for (const access of entries)
+      expect([
+        access.entry,
+        dataWriter(access as never, {
+          LAZURIO_RUNTIME_DEPLOYMENT: "production",
+        }),
+      ]).toEqual([access.entry, false]);
+  });
+  test("the writer variable still decides where it is set", () => {
+    for (const access of entries) {
+      expect(
+        dataWriter(access as never, {
+          LAZURIO_RUNTIME_DEPLOYMENT: "production",
+          LAZURIO_RUNTIME_DATA_WRITER: "true",
+        }),
+      ).toBe(true);
+      expect(
+        dataWriter(access as never, {
+          LAZURIO_RUNTIME_DEPLOYMENT: "production",
+          LAZURIO_RUNTIME_DATA_WRITER: "false",
+        }),
+      ).toBe(false);
+    }
+  });
+  test("a development version still lets a local or Environment entry write", () => {
+    for (const env of [{}, { LAZURIO_RUNTIME_DEPLOYMENT: "environment" }])
+      expect(entries.map((access) => dataWriter(access as never, env))).toEqual(
+        [true, true, false, false, false],
+      );
+  });
+  test("a registry in such a runtime offers no write tool to a local entry", async () => {
+    const env = {
+      ...localEnvironment(),
+      LAZURIO_RUNTIME_DEPLOYMENT: "production",
+    };
+    const local = registry(env);
+    const response = await local.handleMcp(
+      new Request("http://127.0.0.1:43100/mcp", {
+        method: "POST",
+        headers: {
+          host: "127.0.0.1:43100",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+      }),
+    );
+    const names = (
+      (await response.json()) as { result: { tools: Array<{ name: string }> } }
+    ).result.tools.map((tool) => tool.name);
+    expect(names).not.toContain("save_record_draft");
+    expect(names).toContain("find_records");
+  });
+});

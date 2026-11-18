@@ -219,7 +219,8 @@ changes no shared data and prepares a step a person completes in the interface
 (an approval, a signature, a sending). `write` changes data and says with
 `publishesData` whether the change is a publication of data (a commit and push
 in repository-db, `DOLT_COMMIT` in a database) or a draft. A write is offered
-only while `dataWriter` allows it (`LAZURIO_RUNTIME_DATA_WRITER=true`; unset
+only while `dataWriter` allows it (`LAZURIO_RUNTIME_DATA_WRITER=true`; unset,
+never in a runtime that states `LAZURIO_RUNTIME_DEPLOYMENT=production`, else
 only to a local or Environment entry), and a write that publishes data is not
 offered in a production application: there a person publishes in the
 interface. The one exception is a kind of record for which the Owner allowed
