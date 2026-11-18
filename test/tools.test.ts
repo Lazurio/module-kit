@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AGENT_PUBLICATION_IN_PRODUCTION,
   createToolRegistry,
   dataWriter,
   defineTool,
@@ -97,25 +98,12 @@ const saveDraft = defineTool({
 });
 
 const publishRecord = defineTool({
-  name: "save_record",
-  description: "Uloží a publikuje změnu záznamu.",
+  name: "publish_record",
+  description: "Publikuje koncept záznamu všem.",
   input: strings("id"),
   inputSchema: schema("id"),
   minRole: "user",
-  effect: "write",
-  publishesData: true,
-  run: ({ id }) => ({ ok: true, data: { id } }),
-});
-
-const publishTicket = defineTool({
-  name: "create_ticket",
-  description: "Založí a publikuje ticket.",
-  input: strings("id"),
-  inputSchema: schema("id"),
-  minRole: "user",
-  effect: "write",
-  publishesData: true,
-  publicationConsent: "plan DEV-0000, Owner 2026-11-14: agents publish tickets",
+  effect: "publish",
   run: ({ id }) => ({ ok: true, data: { id } }),
 });
 
@@ -165,7 +153,6 @@ const TOOLS = [
   findRecords,
   saveDraft,
   publishRecord,
-  publishTicket,
   prepareApproval,
   exportPdf,
   failing,
@@ -344,7 +331,6 @@ describe("/mcp transport", () => {
   test("the list follows the role", async () => {
     expect(await mcpToolNames(writer, { role: "user" })).toEqual([
       "break_things",
-      "create_ticket",
       "export_record_pdf",
       "find_records",
       "get_app_context",
@@ -380,12 +366,15 @@ describe("/mcp transport", () => {
     expect(call.structured.reason).toBe("data_read_only");
   });
 
-  test("a tool that publishes data is not offered in production", async () => {
+  test("a publication is not offered in production until D1, and is in a development version", async () => {
     expect(await mcpToolNames(writer, { role: "admin" })).not.toContain(
-      "save_record",
+      "publish_record",
     );
-    const call = await mcpTool(writer, "save_record", { id: "r1" });
+    const call = await mcpTool(writer, "publish_record", { id: "r1" });
     expect(call.structured.reason).toBe("forbidden");
+    expect(String(call.structured.message)).toContain("LZD-0037, D1");
+    const viaPage = await pageTool(writer, "publish_record", { id: "r1" });
+    expect([viaPage.status, viaPage.body.reason]).toEqual([403, "forbidden"]);
     const local = registry(localEnvironment());
     const response = await local.handleMcp(
       new Request("http://127.0.0.1:43100/mcp", {
@@ -399,46 +388,47 @@ describe("/mcp transport", () => {
     );
     const listed = (
       (await response.json()) as {
-        result: { tools: Array<{ name: string }> };
+        result: {
+          tools: Array<{ name: string; annotations: Record<string, unknown> }>;
+        };
       }
-    ).result.tools.map((tool) => tool.name);
-    expect(listed).toContain("save_record");
+    ).result.tools;
+    const published = listed.find((tool) => tool.name === "publish_record");
+    expect(published?.annotations).toEqual({
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    });
+    // The same writer gate as a draft: not in a read-only copy.
+    expect(await mcpToolNames(reader, { role: "admin" })).not.toContain(
+      "publish_record",
+    );
+    expect(AGENT_PUBLICATION_IN_PRODUCTION).toBe(false);
   });
 
-  test("with the Owner's recorded consent a publishing write is offered in production", async () => {
-    const names = await mcpToolNames(writer, { role: "user" });
-    expect(names).toContain("create_ticket");
-    expect(names).not.toContain("save_record");
-    const call = await mcpTool(writer, "create_ticket", { id: "t1" });
-    expect(call.structured).toEqual({ id: "t1" });
-    expect(await mcpToolNames(reader, { role: "user" })).not.toContain(
-      "create_ticket",
-    );
-    const viaPage = await pageTool(writer, "create_ticket", { id: "t2" });
-    expect([viaPage.status, viaPage.body]).toEqual([
-      200,
-      { ok: true, data: { id: "t2" } },
-    ]);
-    const otherViaPage = await pageTool(writer, "save_record", { id: "r1" });
-    expect([otherViaPage.status, otherViaPage.body.reason]).toEqual([
-      403,
-      "forbidden",
-    ]);
-    const readOnlyViaPage = await pageTool(reader, "create_ticket", {
-      id: "t3",
-    });
-    expect(readOnlyViaPage.body.reason).toBe("data_read_only");
-    const blank = registry(hostedEnvironment({ writer: true }), [], {
-      tools: [
-        {
-          ...publishTicket,
-          publicationConsent: "  ",
-        } as ToolDefinition<unknown>,
+  test("a publication declared the 0.4 way is refused at registration", () => {
+    const base = {
+      name: "old_publish",
+      description: "x",
+      input: strings("id"),
+      inputSchema: schema("id"),
+      minRole: "user" as const,
+      run: () => ({ ok: true as const, data: {} }),
+    };
+    for (const [declared, message] of [
+      [{ ...base, effect: "write", publishesData: true }, 'effect "publish"'],
+      [
+        { ...base, effect: "write", publicationConsent: "plan DEV-0000" },
+        "publicationConsent is gone",
       ],
-    });
-    expect(await mcpToolNames(blank, { role: "user" })).not.toContain(
-      "create_ticket",
-    );
+      [{ ...base, effect: "delete" }, "Tool effect unknown"],
+    ] as const)
+      expect(() =>
+        registry(hostedEnvironment({ writer: true }), [], {
+          tools: [declared as unknown as ToolDefinition<unknown>],
+        }),
+      ).toThrow(message);
   });
 
   test("annotations say what a tool does", async () => {
@@ -829,8 +819,11 @@ describe("effectOf", () => {
       ),
     ).toBe("prepare");
     expect(
-      await writer.effectOf(post("/api/agent-tools/save_record", {})),
+      await writer.effectOf(post("/api/agent-tools/save_record_draft", {})),
     ).toBe("write");
+    expect(
+      await writer.effectOf(post("/api/agent-tools/publish_record", {})),
+    ).toBe("publish");
   });
   test("other MCP methods and the manifest read; unknown is null", async () => {
     expect(
