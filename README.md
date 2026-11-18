@@ -213,21 +213,25 @@ const tools = await registerAgentTools({
 // After a sign-in or a role change: await tools.refresh();
 ```
 
-**Effects.** `read` changes nothing (finding, reading, computing, producing a
+**Effects** (Lazurio Module Standard, "Effects and publication"; decision D1
+of LZD-0037). `read` changes nothing (finding, reading, computing, producing a
 file such as a PDF) and is offered in the read-only mode as well. `prepare`
-changes no shared data and prepares a step a person completes in the interface
-(an approval, a signature, a sending). `write` changes data and says with
-`publishesData` whether the change is a publication of data (a commit and push
-in repository-db, `DOLT_COMMIT` in a database) or a draft. A write is offered
-only while `dataWriter` allows it (`LAZURIO_RUNTIME_DATA_WRITER=true`; unset,
-never in a runtime that states `LAZURIO_RUNTIME_DEPLOYMENT=production`, else
-only to a local or Environment entry), and a write that publishes data is not
-offered in a production application: there a person publishes in the
-interface. The one exception is a kind of record for which the Owner allowed
-agents to publish in advance, with the decision recorded: such a tool names it
-in `publicationConsent` (a plan or decision reference), which is the person's
-prior consent to that Publication. No tool completes an approval, a signature, a sending, a deletion
-or a person's confirmation.
+changes no shared data and prepares a step a person completes in the
+interface. `write` is a draft: a reversible change that publishes nothing, which
+an agent makes on its own. `publish` is a publication: an irreversible step or
+one others see (an approval, a signature, a sending, a deletion, a movement of
+money, the publication of a draft or of data to everyone). An agent calls it
+only after the person's explicit "Publikuj". A publication is a tool of its own,
+never a mode of a draft tool, and the registry gives it `destructiveHint: true`
+itself. A draft and a publication are offered only while `dataWriter` allows
+writing (`LAZURIO_RUNTIME_DATA_WRITER=true`; unset, never in a runtime that
+states `LAZURIO_RUNTIME_DEPLOYMENT=production`, else only to a local or
+Environment entry). **Until the Owner decides how the App knows that the person
+said "Publikuj", a production application offers no publication**, on `/mcp`
+or on the page, and a development version does
+(`AGENT_PUBLICATION_IN_PRODUCTION`, the one place that decision changes). A
+0.4 declaration of a publication (`effect: "write"` with `publishesData:
+true`, or `publicationConsent`) is refused at registration.
 
 **Answers and refusals.** A tool returns `{ ok: true, data, files? }` or
 `{ ok: false, reason, message, current_revision?, details? }` and never throws

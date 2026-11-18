@@ -44,15 +44,26 @@ export const REFUSAL_CODES = [
 ] as const;
 export type RefusalCode = (typeof REFUSAL_CODES)[number];
 
-/** What a tool does to the App's data:
+/** What a tool does (Lazurio Module Standard, "Effects and publication",
+ * decision D1 of LZD-0037):
  * - `read`: changes nothing (finding, reading, computing, producing a file
  *   such as a PDF); offered in the read-only mode as well;
- * - `prepare`: changes no shared data and prepares a step the person
- *   completes in the interface (an approval, a signature, a sending);
- * - `write`: changes data. `publishesData` says whether the change is a
- *   publication of data (a commit and push in repository-db, `DOLT_COMMIT` in
- *   a database) or only a draft. */
-export type ToolEffect = "read" | "prepare" | "write";
+ * - `prepare`: changes no shared data and prepares a step a person completes
+ *   in the interface;
+ * - `write`: a draft, a reversible change that publishes nothing. An agent
+ *   makes it on its own;
+ * - `publish`: a publication, an irreversible step or one others see (an
+ *   approval, a signature, a sending, a deletion, a movement of money, the
+ *   publication of a draft or of data to everyone). An agent calls it only
+ *   after the person's explicit "Publikuj". It always carries
+ *   `destructiveHint`, and until the Owner decides how the App knows that the
+ *   person said "Publikuj", a production application does not offer it. */
+export type ToolEffect = "read" | "prepare" | "write" | "publish";
+
+/** Whether an agent may publish in a production application. False until the
+ * Owner decides how the App knows the person's "Publikuj" (LZD-0037, D1);
+ * the one place that decision changes. */
+export const AGENT_PUBLICATION_IN_PRODUCTION = false;
 
 /** The application role a tool needs at least. */
 export type ToolRole = "user" | "admin";
@@ -154,24 +165,16 @@ interface ToolDefinitionBase<Input> {
   ) => Promise<ToolResult<object>> | ToolResult<object>;
 }
 
-/** One tool of the App. */
-export type ToolDefinition<Input = unknown> = ToolDefinitionBase<Input> &
-  (
-    | {
-        readonly effect: "read" | "prepare";
-        readonly publishesData?: never;
-        readonly publicationConsent?: never;
-      }
-    | {
-        readonly effect: "write";
-        readonly publishesData: boolean;
-        /** For a write that publishes data in a production application: where
-         * the Owner decided in advance that agents publish this kind of record
-         * (a plan or decision reference). That is the person's prior consent
-         * to the Publication; without it the tool is not offered there. */
-        readonly publicationConsent?: string;
-      }
-  );
+/** One tool of the App. A publication is a tool of its own, never a mode of
+ * a draft tool. */
+export type ToolDefinition<Input = unknown> = ToolDefinitionBase<Input> & {
+  readonly effect: ToolEffect;
+  /** Until 0.4: a write that published data. A draft is `write` (this may
+   * still say `false`); a publication is `effect: "publish"`. */
+  readonly publishesData?: false;
+  /** Gone in 0.5: a publication is `effect: "publish"` (LZD-0037, D1). */
+  readonly publicationConsent?: never;
+};
 
 /** Types a tool from its input schema. */
 export function defineTool<Input>(
@@ -257,7 +260,8 @@ export interface ToolRegistry {
    * HTTP method (every tool call is a `POST`) can decide by the tool:
    * `tools/call` and a page call give the named tool's effect, every other
    * MCP method and the manifest are `read`, and `null` means not a tool
-   * request, an unknown tool or an unreadable body (treat it as a write). */
+   * request, an unknown tool or an unreadable body (treat it as a write).
+   * `write` and `publish` both change data. */
   effectOf(request: Request): Promise<ToolEffect | null>;
 }
 
@@ -336,7 +340,7 @@ function appContextTool(app: AppInfo): ToolDefinition<Record<string, never>> {
 }
 
 function descriptor(tool: ToolDefinition<unknown>): ToolDescriptor {
-  const readOnly = tool.effect !== "write";
+  const readOnly = tool.effect === "read" || tool.effect === "prepare";
   return {
     name: tool.name,
     ...(tool.title === undefined ? {} : { title: tool.title }),
@@ -349,7 +353,7 @@ function descriptor(tool: ToolDefinition<unknown>): ToolDescriptor {
     annotations: {
       ...(tool.title === undefined ? {} : { title: tool.title }),
       readOnlyHint: readOnly,
-      destructiveHint: tool.effect === "write" && tool.publishesData === true,
+      destructiveHint: tool.effect === "publish",
       idempotentHint: tool.idempotent ?? readOnly,
       openWorldHint: false,
       untrustedContentHint: tool.untrustedContent === true,
@@ -471,6 +475,26 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
       throw new TypeError(`Tool name is not snake_case: ${tool.name}`);
     if (tools.has(tool.name))
       throw new TypeError(`Tool defined twice: ${tool.name}`);
+    // What a JavaScript caller or an older declaration may still hand in.
+    const declared = tool as unknown as {
+      readonly effect: unknown;
+      readonly publishesData?: unknown;
+      readonly publicationConsent?: unknown;
+    };
+    if (
+      !(["read", "prepare", "write", "publish"] as unknown[]).includes(
+        declared.effect,
+      )
+    )
+      throw new TypeError(`Tool effect unknown: ${tool.name}`);
+    if (declared.publishesData === true)
+      throw new TypeError(
+        `${tool.name} publishes data: declare it as its own tool with effect "publish"`,
+      );
+    if (declared.publicationConsent !== undefined)
+      throw new TypeError(
+        `${tool.name}: publicationConsent is gone; a publication is effect "publish" (LZD-0037, D1)`,
+      );
     tools.set(tool.name, tool as ToolDefinition<unknown>);
   }
   const own = listener(listenerId, env);
@@ -507,20 +531,21 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
         "forbidden",
         `${tool.name} needs the Application Admin role.`,
       );
-    if (tool.effect !== "write") return null;
+    if (tool.effect === "read" || tool.effect === "prepare") return null;
+    // A draft and a publication go through the same writer gate.
     if (!canWrite)
       return refusal(
         "data_read_only",
         "This App does not change data now (read-only mode).",
       );
     if (
-      tool.publishesData === true &&
+      tool.effect === "publish" &&
       where === "production" &&
-      (tool.publicationConsent ?? "").trim() === ""
+      !AGENT_PUBLICATION_IN_PRODUCTION
     )
       return refusal(
         "forbidden",
-        `${tool.name} would publish data; in a production application a person publishes in the interface.`,
+        `${tool.name} publishes; a production application offers agents no publication until the Owner decides how it knows the person's "Publikuj" (LZD-0037, D1). A person publishes in the interface.`,
       );
     return null;
   };
