@@ -264,8 +264,9 @@ export interface ToolRegistry {
 const TOOL_NAME = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
 
 /** Whether this App may change data now. `LAZURIO_RUNTIME_DATA_WRITER=true`
- * writes and any other value does not; on an Application host the variable is
- * always set. Without it (a Module version in an Environment) only a local or
+ * writes and any other value does not. Without it, a runtime that states
+ * `LAZURIO_RUNTIME_DEPLOYMENT=production` never writes (Lazurio/module-kit#9);
+ * otherwise (a development version in an Environment) only a local or
  * Environment entry writes, to the Environment's own data. */
 export function dataWriter(
   access: AppAccess,
@@ -273,6 +274,7 @@ export function dataWriter(
 ): boolean {
   const value = env.LAZURIO_RUNTIME_DATA_WRITER;
   if (value !== undefined) return value === "true";
+  if (env.LAZURIO_RUNTIME_DEPLOYMENT === "production") return false;
   return access.entry === "local" || access.entry === "environment";
 }
 
