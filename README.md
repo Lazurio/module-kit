@@ -221,17 +221,21 @@ interface. `write` is a draft: a reversible change that publishes nothing, which
 an agent makes on its own. `publish` is a publication: an irreversible step or
 one others see (an approval, a signature, a sending, a deletion, a movement of
 money, the publication of a draft or of data to everyone). An agent calls it
-only after the person's explicit "Publikuj". A publication is a tool of its own,
+on the person's "Publikuj". That word is an agreement between the person and
+the agent, not a mechanism the App checks (the Owner, 2026-11-22), so **a
+production application offers its publications to agents** as a development
+version does, on `/mcp` and on the page. A publication is a tool of its own,
 never a mode of a draft tool, and the registry gives it `destructiveHint: true`
 itself. A draft and a publication are offered only while `dataWriter` allows
 writing (`LAZURIO_RUNTIME_DATA_WRITER=true`; unset, never in a runtime that
 states `LAZURIO_RUNTIME_DEPLOYMENT=production`, else only to a local or
-Environment entry). **Until the Owner decides how the App knows that the person
-said "Publikuj", a production application offers no publication**, on `/mcp`
-or on the page, and a development version does
-(`AGENT_PUBLICATION_IN_PRODUCTION`, the one place that decision changes). A
-0.4 declaration of a publication (`effect: "write"` with `publishesData:
-true`, or `publicationConsent`) is refused at registration.
+Environment entry). The App records who published and which way with the
+change itself: the person is `context.access.person.subject` and the way is
+`context.channel` (`mcp` or `webmcp`), as the Standard's "Author and channel"
+says; the registry's audit line names them too, with the effect.
+`AGENT_PUBLICATION_IN_PRODUCTION` is `true` and deprecated. A 0.4 declaration
+of a publication (`effect: "write"` with `publishesData: true`, or
+`publicationConsent`) is refused at registration.
 
 **Answers and refusals.** A tool returns `{ ok: true, data, files? }` or
 `{ ok: false, reason, message, current_revision?, details? }` and never throws
@@ -240,8 +244,8 @@ for an expected outcome. The common reasons are `identity_unavailable`,
 (with `current_revision`), `data_read_only`, `unavailable` and
 `internal_error`; a Module adds domain reasons of its own. On `/mcp` a refusal
 is a tool result with `isError` and `structuredContent`; a file is an embedded
-resource. Every call writes one audit line (channel, tool, entry, subject,
-role, outcome, duration), never the input or the answer.
+resource. Every call writes one audit line (channel, tool, effect, entry,
+subject, role, outcome, duration), never the input or the answer.
 
 **A data layer that decides by the method.** Every tool call is a `POST`.
 An App whose data layer chooses a read or a write path by the HTTP method asks
@@ -252,9 +256,10 @@ readable.
 
 **Tests.** `@lazurio/module-kit/tools/testing` builds requests as the gateway
 states them (`gatewayRequest`, `hostedEnvironment`, `localEnvironment`) and
-calls the registry (`mcpCall`, `mcpToolNames`, `mcpTool`, `pageTool`), so a
-Module tests the list per role, the refusal without a role, writes in the
-read-only mode and `record_changed` on both transports.
+calls the registry (`mcpCall`, `mcpToolNames`, `mcpTools`, `mcpTool`,
+`pageTool`), so a Module tests the list per role, the refusal without a role,
+writes in the read-only mode, `record_changed` on both transports, and that
+each publication is listed with `destructiveHint: true` (`mcpTools`).
 
 ## Bun.serve
 

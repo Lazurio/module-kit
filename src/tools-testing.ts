@@ -138,6 +138,29 @@ export async function mcpToolNames(
   return (result?.tools ?? []).map((tool) => tool.name).sort();
 }
 
+/** The tools `tools/list` returns for a caller, with their annotations, so
+ * a Module checks that every publication carries `destructiveHint`. */
+export async function mcpTools(
+  registry: ToolRegistry,
+  caller: GatewayCaller,
+  appOrigin?: string,
+): Promise<Array<{ name: string; annotations: Record<string, unknown> }>> {
+  const { body } = await mcpCall(
+    registry,
+    "tools/list",
+    {},
+    { caller, ...(appOrigin === undefined ? {} : { appOrigin }) },
+  );
+  const result = body.result as
+    | {
+        tools?: Array<{ name: string; annotations?: Record<string, unknown> }>;
+      }
+    | undefined;
+  return (result?.tools ?? [])
+    .map((tool) => ({ name: tool.name, annotations: tool.annotations ?? {} }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** Calls a tool through `/mcp` and returns its structured answer. */
 export async function mcpTool(
   registry: ToolRegistry,

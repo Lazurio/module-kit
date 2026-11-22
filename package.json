@@ -1,6 +1,6 @@
 {
   "name": "@lazurio/module-kit",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Lazurio Module Standard runtime helpers: listener, health, shutdown, app access, tools for agents",
   "license": "MIT",
   "type": "module",
