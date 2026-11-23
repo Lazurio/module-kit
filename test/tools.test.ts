@@ -16,6 +16,7 @@ import {
   mcpCall,
   mcpTool,
   mcpToolNames,
+  mcpTools,
   pageTool,
   TEST_ORIGIN,
   TEST_SUBJECT,
@@ -334,6 +335,7 @@ describe("/mcp transport", () => {
       "export_record_pdf",
       "find_records",
       "get_app_context",
+      "publish_record",
       "save_record_draft",
     ]);
     expect(await mcpToolNames(writer, { role: "admin" })).toContain(
@@ -366,15 +368,28 @@ describe("/mcp transport", () => {
     expect(call.structured.reason).toBe("data_read_only");
   });
 
-  test("a publication is not offered in production until D1, and is in a development version", async () => {
-    expect(await mcpToolNames(writer, { role: "admin" })).not.toContain(
+  test("a publication is offered in production and in a development version, always destructive (D1, 2026-11-22)", async () => {
+    // "Publikuj" is an agreement between the person and the agent: the App
+    // offers the publication and the agent calls it on the person's word.
+    expect(await mcpToolNames(writer, { role: "user" })).toContain(
       "publish_record",
     );
     const call = await mcpTool(writer, "publish_record", { id: "r1" });
-    expect(call.structured.reason).toBe("forbidden");
-    expect(String(call.structured.message)).toContain("LZD-0037, D1");
+    expect(call.isError).toBe(false);
+    expect(call.structured).toEqual({ id: "r1" });
     const viaPage = await pageTool(writer, "publish_record", { id: "r1" });
-    expect([viaPage.status, viaPage.body.reason]).toEqual([403, "forbidden"]);
+    expect(viaPage.status).toBe(200);
+    const destructive = {
+      readOnlyHint: false,
+      destructiveHint: true,
+      idempotentHint: false,
+      openWorldHint: false,
+    };
+    const hosted = (await mcpTools(writer, { role: "user" })).find(
+      (tool) => tool.name === "publish_record",
+    );
+    expect(hosted?.annotations).toEqual(destructive);
+    // A development version in an Environment offers it the same way.
     const local = registry(localEnvironment());
     const response = await local.handleMcp(
       new Request("http://127.0.0.1:43100/mcp", {
@@ -393,18 +408,44 @@ describe("/mcp transport", () => {
         };
       }
     ).result.tools;
-    const published = listed.find((tool) => tool.name === "publish_record");
-    expect(published?.annotations).toEqual({
-      readOnlyHint: false,
-      destructiveHint: true,
-      idempotentHint: false,
-      openWorldHint: false,
-    });
+    expect(
+      listed.find((tool) => tool.name === "publish_record")?.annotations,
+    ).toEqual(destructive);
     // The same writer gate as a draft: not in a read-only copy.
     expect(await mcpToolNames(reader, { role: "admin" })).not.toContain(
       "publish_record",
     );
-    expect(AGENT_PUBLICATION_IN_PRODUCTION).toBe(false);
+    const refused = await mcpTool(reader, "publish_record", { id: "r1" });
+    expect(refused.structured.reason).toBe("data_read_only");
+    expect(AGENT_PUBLICATION_IN_PRODUCTION).toBe(true);
+  });
+
+  test("a publication is audited with who published, which way and its effect", async () => {
+    const audit: ToolAuditEvent[] = [];
+    const audited = registry(hostedEnvironment({ writer: true }), audit);
+    await mcpTool(audited, "publish_record", { id: "r1" });
+    await pageTool(audited, "publish_record", { id: "r1" });
+    expect(
+      audit.map(({ channel, subject, effect, outcome }) => ({
+        channel,
+        subject,
+        effect,
+        outcome,
+      })),
+    ).toEqual([
+      {
+        channel: "mcp",
+        subject: TEST_SUBJECT,
+        effect: "publish",
+        outcome: "ok",
+      },
+      {
+        channel: "webmcp",
+        subject: TEST_SUBJECT,
+        effect: "publish",
+        outcome: "ok",
+      },
+    ]);
   });
 
   test("a publication declared the 0.4 way is refused at registration", () => {
@@ -545,6 +586,7 @@ describe("/mcp transport", () => {
         event: "agent-tool",
         channel: "mcp",
         tool: "find_records",
+        effect: "read",
         entry: "app",
         subject: TEST_SUBJECT,
         appRole: "user",
@@ -554,6 +596,7 @@ describe("/mcp transport", () => {
         event: "agent-tool",
         channel: "mcp",
         tool: "prepare_record_approval",
+        effect: "prepare",
         entry: "app",
         subject: TEST_SUBJECT,
         appRole: "user",

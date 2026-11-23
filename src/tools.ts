@@ -54,16 +54,18 @@ export type RefusalCode = (typeof REFUSAL_CODES)[number];
  *   makes it on its own;
  * - `publish`: a publication, an irreversible step or one others see (an
  *   approval, a signature, a sending, a deletion, a movement of money, the
- *   publication of a draft or of data to everyone). An agent calls it only
- *   after the person's explicit "Publikuj". It always carries
- *   `destructiveHint`, and until the Owner decides how the App knows that the
- *   person said "Publikuj", a production application does not offer it. */
+ *   publication of a draft or of data to everyone). An agent calls it on the
+ *   person's "Publikuj", which is an agreement between the person and the
+ *   agent, not a mechanism the App checks (the Owner, 2026-11-22). It is a
+ *   tool of its own, always carries `destructiveHint`, and is offered in a
+ *   production application as in a development version. */
 export type ToolEffect = "read" | "prepare" | "write" | "publish";
 
-/** Whether an agent may publish in a production application. False until the
- * Owner decides how the App knows the person's "Publikuj" (LZD-0037, D1);
- * the one place that decision changes. */
-export const AGENT_PUBLICATION_IN_PRODUCTION = false;
+/** Whether an agent may publish in a production application: yes, since the
+ * Owner decided on 2026-11-22 that "Publikuj" is an agreement between the
+ * person and the agent, not a mechanism the App checks (LZD-0037, D1).
+ * @deprecated Always true; kept so that 0.5 imports still compile. */
+export const AGENT_PUBLICATION_IN_PRODUCTION = true;
 
 /** The application role a tool needs at least. */
 export type ToolRole = "user" | "admin";
@@ -224,6 +226,9 @@ export interface ToolAuditEvent {
   readonly entry: AppAccess["entry"];
   readonly subject: string | null;
   readonly appRole: AppAccess["appRole"];
+  /** The tool's effect; null for a tool this App does not have. With
+   * `subject` and `channel` it tells who published and which way. */
+  readonly effect: ToolEffect | null;
   readonly outcome: "ok" | RefusalCode | (string & {});
   readonly durationMs: number;
 }
@@ -524,7 +529,6 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
     tool: ToolDefinition<unknown>,
     access: KnownAccess,
     canWrite: boolean,
-    where: Deployment,
   ): ToolRefusal | null => {
     if (tool.minRole === "admin" && access.appRole !== "admin")
       return refusal(
@@ -538,15 +542,6 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
         "data_read_only",
         "This App does not change data now (read-only mode).",
       );
-    if (
-      tool.effect === "publish" &&
-      where === "production" &&
-      !AGENT_PUBLICATION_IN_PRODUCTION
-    )
-      return refusal(
-        "forbidden",
-        `${tool.name} publishes; a production application offers agents no publication until the Owner decides how it knows the person's "Publikuj" (LZD-0037, D1). A person publishes in the interface.`,
-      );
     return null;
   };
 
@@ -556,9 +551,8 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
   const list = (access: AppAccess): readonly ToolDescriptor[] => {
     if (!known(access)) return [];
     const canWrite = dataWriter(access, env);
-    const where = deployment(env);
     return [...tools.values()]
-      .filter((tool) => barrier(tool, access, canWrite, where) === null)
+      .filter((tool) => barrier(tool, access, canWrite) === null)
       .map(descriptor);
   };
 
@@ -575,6 +569,7 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
         event: "agent-tool",
         channel,
         tool: tools.has(name) ? name : "(unknown)",
+        effect: tools.get(name)?.effect ?? null,
         entry: access.entry,
         subject: access.person?.subject ?? null,
         appRole: access.appRole,
@@ -587,8 +582,7 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
     if (tool === undefined)
       return finish(refusal("unknown_tool", "This App has no such tool."));
     const canWrite = dataWriter(access, env);
-    const where = deployment(env);
-    const blocked = barrier(tool, access, canWrite, where);
+    const blocked = barrier(tool, access, canWrite);
     if (blocked !== null) return finish(blocked);
     let parsed: Awaited<
       ReturnType<(typeof tool.input)["~standard"]["validate"]>
@@ -616,7 +610,7 @@ export function createToolRegistry(options: ToolRegistryOptions): ToolRegistry {
       const result = await tool.run(parsed.value, {
         access,
         channel,
-        deployment: where,
+        deployment: deployment(env),
         canWrite,
         request,
       });
