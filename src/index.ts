@@ -336,7 +336,7 @@ export interface DevFrameOptions {
   /** The address of Lazurio's `shell.js`, `https://…`, `http://127.0.0.1…`
    * or `http://localhost…`. Absent: nothing is inserted. */
   readonly shellScript?: string;
-  /** The frame's language, as `lang` of `<lazurio-frame>`. */
+  /** The frame's language, as `lang` of `<lazurio-buddy>`. */
   readonly lang?: string;
 }
 
@@ -374,7 +374,7 @@ function devFrameTags(options: DevFrameOptions): DevFrameTag[] {
       injectTo: "body",
     },
     {
-      tag: "lazurio-frame",
+      tag: "lazurio-buddy",
       attrs: {
         version: "dev",
         ...(options.lang === undefined ? {} : { lang: options.lang }),
@@ -391,7 +391,7 @@ const escapeAttribute = (value: string) =>
  * 2026-11-22: DEV has a blue dashed frame with the label DEV, drawn by the
  * overlay). Only `vite serve` uses it; a build, STAGING and PROD get nothing
  * from module-kit. It inserts Lazurio's shell script and
- * `<lazurio-frame version="dev">` at the end of `<body>`, and marks `<html>`
+ * `<lazurio-buddy version="dev">` at the end of `<body>`, and marks `<html>`
  * with `data-lazurio-shell="host"` so the shell does not read a shell
  * document the dev server does not have. The frame itself, its colour and
  * its text come only from the shell's element. A Module can leave the plugin

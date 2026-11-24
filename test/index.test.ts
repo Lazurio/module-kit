@@ -759,7 +759,7 @@ test("viteDevFramePlugin runs only while serving, and a build gets nothing", () 
   expect(plugin.transformIndexHtml.order).toBe("post");
 });
 
-test("viteDevFramePlugin inserts the shell script and <lazurio-frame version=dev>, and draws nothing itself", () => {
+test("viteDevFramePlugin inserts the shell script and <lazurio-buddy version=dev>, and draws nothing itself", () => {
   const { html, tags } = viteDevFramePlugin({
     shellScript: SHELL,
     lang: "cs",
@@ -772,7 +772,7 @@ test("viteDevFramePlugin inserts the shell script and <lazurio-frame version=dev
       injectTo: "body",
     },
     {
-      tag: "lazurio-frame",
+      tag: "lazurio-buddy",
       attrs: { version: "dev", lang: "cs" },
       injectTo: "body",
     },
@@ -792,7 +792,7 @@ test("viteDevFramePlugin without a shell script inserts nothing, and keeps a pag
   }).transformIndexHtml.handler(own);
   expect(html).toBe(own);
   expect(tags[1]).toEqual({
-    tag: "lazurio-frame",
+    tag: "lazurio-buddy",
     attrs: { version: "dev" },
     injectTo: "body",
   });
@@ -820,7 +820,7 @@ test("bunDevFramePlugin serves the same DEV frame from Bun's HTML bundling in de
   const html = devFrameHtml(page, { shellScript: SHELL, lang: "cs" });
   expect(html).toContain('<html data-lazurio-shell="host" lang="cs">');
   expect(html).toContain(
-    `<script type="module" src="${SHELL}"></script><lazurio-frame version="dev" lang="cs"></lazurio-frame></body>`,
+    `<script type="module" src="${SHELL}"></script><lazurio-buddy version="dev" lang="cs"></lazurio-buddy></body>`,
   );
   expect(devFrameHtml(page, {})).toBe(page);
   expect(() =>
@@ -842,7 +842,7 @@ test("bunDevFramePlugin serves the same DEV frame from Bun's HTML bundling in de
   await Bun.sleep(20);
   expect(loaded?.loader).toBe("html");
   expect(loaded?.contents).toContain(
-    '<lazurio-frame version="dev"></lazurio-frame>',
+    '<lazurio-buddy version="dev"></lazurio-buddy>',
   );
   await rm(dir, { recursive: true, force: true });
 });

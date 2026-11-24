@@ -57,7 +57,7 @@ try {
 | `viteShutdownPlugin({ closeTimeoutMs = 2000 })` | Vite plugin: SIGTERM/SIGINT closes every connection, bounds `server.close()` and exits 0 (Vite alone reports 128 + signal and an open keep-alive connection can hold `close()`); use in `vite.config.ts` `plugins` for dev and preview |
 | `viteServerOptions(id, env)` | `{ host, port, strictPort: true, allowedHosts }` for Vite `server` |
 | `bunDevFramePlugin({ shellScript, lang })`, `devFrameHtml(html, options)` | the same DEV frame for an App whose development run bundles its page with Bun (`[serve.static] plugins` in `bunfig.toml`); `devFrameHtml` is the page as a string |
-| `viteDevFramePlugin({ shellScript, lang })` | Vite plugin for `vite serve` only: the DEV frame of the Module's app (decision 0249). It inserts Lazurio's shell script and `<lazurio-frame version="dev">` and marks `<html data-lazurio-shell="host">`; a build, STAGING and PROD get nothing. Without `shellScript` it inserts nothing; throws `dev-frame-invalid` for an address that is not `https`, `http://127.0.0.1` or `http://localhost`, or a `lang` that is no language tag |
+| `viteDevFramePlugin({ shellScript, lang })` | Vite plugin for `vite serve` only: the DEV frame of the Module's app (decision 0249). It inserts Lazurio's shell script and `<lazurio-buddy version="dev">` and marks `<html data-lazurio-shell="host">`; a build, STAGING and PROD get nothing. Without `shellScript` it inserts nothing; throws `dev-frame-invalid` for an address that is not `https`, `http://127.0.0.1` or `http://localhost`, or a `lang` that is no language tag |
 | `astroServerOptions(id, env)` | `{ host, port, allowedHosts }` for Astro `server` |
 | `health(ready)` | `(req) => Promise<Response>`: 200 `{"status":"ok"}` when `ready()` is true, else (or when it throws) 503 `{"status":"starting"}` |
 | `withHealth(handler, path = "/healthz", ready = () => true)` | a `Bun.serve` fetch handler that answers `path` with `health(ready)` and passes everything else on |
@@ -301,8 +301,9 @@ export default defineConfig(({ command }) => ({
 
 **The DEV frame.** A Module's app on its dev server (DEV: the worktree on
 localhost in the Environment's browser) wears a blue dashed frame with the
-label DEV (decision 0249, addendum of 2026-11-22). The frame is Lazurio's
-`<lazurio-frame>` element from the shell script; module-kit draws nothing of
+label DEV (decision 0249, addendum of 2026-11-22). Lazurio's
+`<lazurio-buddy>` element from the shell script draws it (the one element of
+Buddy and the frame); module-kit draws nothing of
 its own and inserts it only while serving:
 
 ```ts
