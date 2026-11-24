@@ -344,6 +344,49 @@ const SHELL_SCRIPT =
   /^(https:\/\/[^\s"'<>]+|http:\/\/(127\.0\.0\.1|localhost)(:[0-9]{1,5})?\/[^\s"'<>]*)$/;
 const LANG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
 
+function checkDevFrame(options: DevFrameOptions): void {
+  const script = options.shellScript;
+  if (script !== undefined && !SHELL_SCRIPT.test(script))
+    throw new ModuleKitError(
+      "dev-frame-invalid",
+      "shellScript must be an https URL or an http URL on 127.0.0.1 or localhost",
+    );
+  if (options.lang !== undefined && !LANG.test(options.lang))
+    throw new ModuleKitError(
+      "dev-frame-invalid",
+      "lang must be a language tag",
+    );
+}
+
+/** `<html data-lazurio-shell="host">`, unless the page says otherwise. */
+function markShellHost(html: string): string {
+  return /<html\b[^>]*\bdata-lazurio-shell=/i.test(html)
+    ? html
+    : html.replace(/<html\b/i, '<html data-lazurio-shell="host"');
+}
+
+/** The two tags of the DEV frame: the one shape both plugins insert. */
+function devFrameTags(options: DevFrameOptions): DevFrameTag[] {
+  return [
+    {
+      tag: "script",
+      attrs: { type: "module", src: options.shellScript as string },
+      injectTo: "body",
+    },
+    {
+      tag: "lazurio-frame",
+      attrs: {
+        version: "dev",
+        ...(options.lang === undefined ? {} : { lang: options.lang }),
+      },
+      injectTo: "body",
+    },
+  ];
+}
+
+const escapeAttribute = (value: string) =>
+  value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
 /** Vite plugin: the DEV frame of a Module's app (decision 0249, addendum of
  * 2026-11-22: DEV has a blue dashed frame with the label DEV, drawn by the
  * overlay). Only `vite serve` uses it; a build, STAGING and PROD get nothing
@@ -362,46 +405,67 @@ export function viteDevFramePlugin(options: DevFrameOptions = {}): {
     handler: (html: string) => { html: string; tags: DevFrameTag[] };
   };
 } {
-  const script = options.shellScript;
-  if (script !== undefined && !SHELL_SCRIPT.test(script))
-    throw new ModuleKitError(
-      "dev-frame-invalid",
-      "shellScript must be an https URL or an http URL on 127.0.0.1 or localhost",
-    );
-  if (options.lang !== undefined && !LANG.test(options.lang))
-    throw new ModuleKitError(
-      "dev-frame-invalid",
-      "lang must be a language tag",
-    );
+  checkDevFrame(options);
   return {
     name: "lazurio-module-kit-dev-frame",
     apply: "serve",
     transformIndexHtml: {
       order: "post",
-      handler: (html) => {
-        if (script === undefined) return { html, tags: [] };
-        const marked = /<html\b[^>]*\bdata-lazurio-shell=/i.test(html)
-          ? html
-          : html.replace(/<html\b/i, '<html data-lazurio-shell="host"');
-        return {
-          html: marked,
-          tags: [
-            {
-              tag: "script",
-              attrs: { type: "module", src: script },
-              injectTo: "body",
-            },
-            {
-              tag: "lazurio-frame",
-              attrs: {
-                version: "dev",
-                ...(options.lang === undefined ? {} : { lang: options.lang }),
-              },
-              injectTo: "body",
-            },
-          ],
-        };
-      },
+      handler: (html) =>
+        options.shellScript === undefined
+          ? { html, tags: [] }
+          : { html: markShellHost(html), tags: devFrameTags(options) },
+    },
+  };
+}
+
+/** The page with the DEV frame, as a string: what `bunDevFramePlugin`
+ * serves. Without `shellScript` the page is unchanged. */
+export function devFrameHtml(html: string, options: DevFrameOptions): string {
+  checkDevFrame(options);
+  if (options.shellScript === undefined) return html;
+  const tags = devFrameTags(options)
+    .map(({ tag, attrs }) => {
+      const list = Object.entries(attrs ?? {})
+        .map(([name, value]) => ` ${name}="${escapeAttribute(String(value))}"`)
+        .join("");
+      return `<${tag}${list}></${tag}>`;
+    })
+    .join("");
+  const marked = markShellHost(html);
+  return /<\/body>/i.test(marked)
+    ? marked.replace(/<\/body>/i, `${tags}</body>`)
+    : `${marked}${tags}`;
+}
+
+/** The subset of Bun's plugin builder the DEV frame needs. */
+export interface DevFramePluginBuild {
+  onLoad(
+    constraints: { filter: RegExp },
+    callback: (args: {
+      path: string;
+    }) => Promise<{ contents: string; loader: "html" }>,
+  ): unknown;
+}
+
+/** Bun plugin: the same DEV frame for an App whose development run bundles
+ * its page with Bun (`Bun.serve` with an HTML import, as the templates do).
+ * Register it for development only, in the App's `bunfig.toml`:
+ * `[serve.static] plugins = ["./dev-frame.ts"]`, where `dev-frame.ts` is
+ * `export default bunDevFramePlugin({ shellScript })`. A build served as
+ * files does not pass through it. */
+export function bunDevFramePlugin(options: DevFrameOptions = {}): {
+  name: string;
+  setup: (build: DevFramePluginBuild) => void;
+} {
+  checkDevFrame(options);
+  return {
+    name: "lazurio-module-kit-dev-frame",
+    setup(build) {
+      build.onLoad({ filter: /\.html$/ }, async (args) => ({
+        contents: devFrameHtml(await Bun.file(args.path).text(), options),
+        loader: "html",
+      }));
     },
   };
 }

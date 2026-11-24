@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   allowedHosts,
   appAccess,
@@ -739,7 +742,11 @@ describe("appAccess", () => {
 
 // ---------------------------------------------------------------- viteDevFramePlugin
 
-import { viteDevFramePlugin } from "../src/index";
+import {
+  bunDevFramePlugin,
+  devFrameHtml,
+  viteDevFramePlugin,
+} from "../src/index";
 
 const page =
   '<!doctype html>\n<html lang="cs">\n<head><title>x</title></head>\n<body><div id="root"></div></body>\n</html>';
@@ -807,4 +814,35 @@ test("viteDevFramePlugin refuses a shell script elsewhere and a lang that is no 
       shellScript: "https://launchpad.example.test/.lazurio/shell.js",
     }),
   ).not.toThrow();
+});
+
+test("bunDevFramePlugin serves the same DEV frame from Bun's HTML bundling in development", async () => {
+  const html = devFrameHtml(page, { shellScript: SHELL, lang: "cs" });
+  expect(html).toContain('<html data-lazurio-shell="host" lang="cs">');
+  expect(html).toContain(
+    `<script type="module" src="${SHELL}"></script><lazurio-frame version="dev" lang="cs"></lazurio-frame></body>`,
+  );
+  expect(devFrameHtml(page, {})).toBe(page);
+  expect(() =>
+    devFrameHtml(page, { shellScript: "http://example.com/x.js" }),
+  ).toThrow(ModuleKitError);
+  const dir = await mkdtemp(join(tmpdir(), "module-kit-frame-"));
+  const file = join(dir, "index.html");
+  await writeFile(file, page);
+  let loaded: { contents: string; loader: string } | undefined;
+  bunDevFramePlugin({ shellScript: SHELL }).setup({
+    onLoad: (constraints, callback) => {
+      expect(constraints.filter.test("x/index.html")).toBe(true);
+      expect(constraints.filter.test("x/main.ts")).toBe(false);
+      void callback({ path: file }).then((result) => {
+        loaded = result;
+      });
+    },
+  });
+  await Bun.sleep(20);
+  expect(loaded?.loader).toBe("html");
+  expect(loaded?.contents).toContain(
+    '<lazurio-frame version="dev"></lazurio-frame>',
+  );
+  await rm(dir, { recursive: true, force: true });
 });
