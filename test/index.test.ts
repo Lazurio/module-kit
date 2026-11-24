@@ -736,3 +736,75 @@ describe("appAccess", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------- viteDevFramePlugin
+
+import { viteDevFramePlugin } from "../src/index";
+
+const page =
+  '<!doctype html>\n<html lang="cs">\n<head><title>x</title></head>\n<body><div id="root"></div></body>\n</html>';
+const SHELL = "http://127.0.0.1:43000/.lazurio/shell.js";
+
+test("viteDevFramePlugin runs only while serving, and a build gets nothing", () => {
+  const plugin = viteDevFramePlugin({ shellScript: SHELL });
+  expect(plugin.apply).toBe("serve");
+  expect(plugin.name).toBe("lazurio-module-kit-dev-frame");
+  expect(plugin.transformIndexHtml.order).toBe("post");
+});
+
+test("viteDevFramePlugin inserts the shell script and <lazurio-frame version=dev>, and draws nothing itself", () => {
+  const { html, tags } = viteDevFramePlugin({
+    shellScript: SHELL,
+    lang: "cs",
+  }).transformIndexHtml.handler(page);
+  expect(html).toContain('<html data-lazurio-shell="host" lang="cs">');
+  expect(tags).toEqual([
+    {
+      tag: "script",
+      attrs: { type: "module", src: SHELL },
+      injectTo: "body",
+    },
+    {
+      tag: "lazurio-frame",
+      attrs: { version: "dev", lang: "cs" },
+      injectTo: "body",
+    },
+  ]);
+  // No style, colour or text of module-kit's own: the shell's element draws.
+  expect(JSON.stringify(tags)).not.toMatch(/style|color|DEV/);
+});
+
+test("viteDevFramePlugin without a shell script inserts nothing, and keeps a page's own data-lazurio-shell", () => {
+  expect(viteDevFramePlugin().transformIndexHtml.handler(page)).toEqual({
+    html: page,
+    tags: [],
+  });
+  const own = page.replace("<html", '<html data-lazurio-shell="page"');
+  const { html, tags } = viteDevFramePlugin({
+    shellScript: SHELL,
+  }).transformIndexHtml.handler(own);
+  expect(html).toBe(own);
+  expect(tags[1]).toEqual({
+    tag: "lazurio-frame",
+    attrs: { version: "dev" },
+    injectTo: "body",
+  });
+});
+
+test("viteDevFramePlugin refuses a shell script elsewhere and a lang that is no language tag", () => {
+  for (const shellScript of [
+    "http://example.com/shell.js",
+    "javascript:alert(1)",
+    'https://x.test/a" onload="x',
+    "/.lazurio/shell.js",
+  ])
+    expect(() => viteDevFramePlugin({ shellScript })).toThrow(ModuleKitError);
+  expect(() =>
+    viteDevFramePlugin({ shellScript: SHELL, lang: 'cs" x="y' }),
+  ).toThrow(ModuleKitError);
+  expect(() =>
+    viteDevFramePlugin({
+      shellScript: "https://launchpad.example.test/.lazurio/shell.js",
+    }),
+  ).not.toThrow();
+});

@@ -56,6 +56,7 @@ try {
 | `allowedHosts(id, env)` | the external origin's hostname (if any) plus `localhost`, `127.0.0.1` and `::1`; never a wildcard |
 | `viteShutdownPlugin({ closeTimeoutMs = 2000 })` | Vite plugin: SIGTERM/SIGINT closes every connection, bounds `server.close()` and exits 0 (Vite alone reports 128 + signal and an open keep-alive connection can hold `close()`); use in `vite.config.ts` `plugins` for dev and preview |
 | `viteServerOptions(id, env)` | `{ host, port, strictPort: true, allowedHosts }` for Vite `server` |
+| `viteDevFramePlugin({ shellScript, lang })` | Vite plugin for `vite serve` only: the DEV frame of the Module's app (decision 0249). It inserts Lazurio's shell script and `<lazurio-frame version="dev">` and marks `<html data-lazurio-shell="host">`; a build, STAGING and PROD get nothing. Without `shellScript` it inserts nothing; throws `dev-frame-invalid` for an address that is not `https`, `http://127.0.0.1` or `http://localhost`, or a `lang` that is no language tag |
 | `astroServerOptions(id, env)` | `{ host, port, allowedHosts }` for Astro `server` |
 | `health(ready)` | `(req) => Promise<Response>`: 200 `{"status":"ok"}` when `ready()` is true, else (or when it throws) 503 `{"status":"starting"}` |
 | `withHealth(handler, path = "/healthz", ready = () => true)` | a `Bun.serve` fetch handler that answers `path` with `health(ready)` and passes everything else on |
@@ -296,6 +297,23 @@ export default defineConfig(({ command }) => ({
   ...(command === "serve" ? { server: viteServerOptions("app") } : {}),
 }));
 ```
+
+**The DEV frame.** A Module's app on its dev server (DEV: the worktree on
+localhost in the Environment's browser) wears a blue dashed frame with the
+label DEV (decision 0249, addendum of 2026-11-22). The frame is Lazurio's
+`<lazurio-frame>` element from the shell script; module-kit draws nothing of
+its own and inserts it only while serving:
+
+```ts
+import { viteDevFramePlugin } from "@lazurio/module-kit";
+
+plugins: [react(), viteDevFramePlugin({ shellScript, lang: "cs" })];
+```
+
+Where the dev page loads the shell script from is not decided yet: the
+Launchpad serves it only behind its gateway. Until it is, `shellScript` is the
+Module's to state, and without it nothing is inserted. A Module can leave the
+plugin out; the frame marks DEV, it does not enforce it.
 
 ## Astro
 

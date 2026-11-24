@@ -12,7 +12,8 @@ type Environment = Readonly<Record<string, string | undefined>>;
 export type ModuleKitErrorCode =
   | "listener-missing"
   | "listeners-invalid"
-  | "environment-missing";
+  | "environment-missing"
+  | "dev-frame-invalid";
 
 export class ModuleKitError extends Error {
   readonly code: ModuleKitErrorCode;
@@ -318,6 +319,90 @@ export function viteShutdownPlugin(
     name: "lazurio-module-kit-shutdown",
     configureServer: attach,
     configurePreviewServer: attach,
+  };
+}
+
+/** A tag Vite inserts into `index.html` (its `HtmlTagDescriptor`). */
+export interface DevFrameTag {
+  tag: string;
+  attrs?: Record<string, string | boolean>;
+  injectTo: "body" | "head";
+}
+
+/** Where the DEV page loads Lazurio's shell script from. Undecided until the
+ * Launchpad offers it on the Environment's loopback without the gateway's
+ * admission; until then a Module states it, or the frame is not drawn. */
+export interface DevFrameOptions {
+  /** The address of Lazurio's `shell.js`, `https://…`, `http://127.0.0.1…`
+   * or `http://localhost…`. Absent: nothing is inserted. */
+  readonly shellScript?: string;
+  /** The frame's language, as `lang` of `<lazurio-frame>`. */
+  readonly lang?: string;
+}
+
+const SHELL_SCRIPT =
+  /^(https:\/\/[^\s"'<>]+|http:\/\/(127\.0\.0\.1|localhost)(:[0-9]{1,5})?\/[^\s"'<>]*)$/;
+const LANG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
+
+/** Vite plugin: the DEV frame of a Module's app (decision 0249, addendum of
+ * 2026-11-22: DEV has a blue dashed frame with the label DEV, drawn by the
+ * overlay). Only `vite serve` uses it; a build, STAGING and PROD get nothing
+ * from module-kit. It inserts Lazurio's shell script and
+ * `<lazurio-frame version="dev">` at the end of `<body>`, and marks `<html>`
+ * with `data-lazurio-shell="host"` so the shell does not read a shell
+ * document the dev server does not have. The frame itself, its colour and
+ * its text come only from the shell's element. A Module can leave the plugin
+ * out: it frames, it does not enforce. Use in `vite.config.ts`:
+ * `plugins: [react(), viteDevFramePlugin({ shellScript })]`. */
+export function viteDevFramePlugin(options: DevFrameOptions = {}): {
+  name: string;
+  apply: "serve";
+  transformIndexHtml: {
+    order: "post";
+    handler: (html: string) => { html: string; tags: DevFrameTag[] };
+  };
+} {
+  const script = options.shellScript;
+  if (script !== undefined && !SHELL_SCRIPT.test(script))
+    throw new ModuleKitError(
+      "dev-frame-invalid",
+      "shellScript must be an https URL or an http URL on 127.0.0.1 or localhost",
+    );
+  if (options.lang !== undefined && !LANG.test(options.lang))
+    throw new ModuleKitError(
+      "dev-frame-invalid",
+      "lang must be a language tag",
+    );
+  return {
+    name: "lazurio-module-kit-dev-frame",
+    apply: "serve",
+    transformIndexHtml: {
+      order: "post",
+      handler: (html) => {
+        if (script === undefined) return { html, tags: [] };
+        const marked = /<html\b[^>]*\bdata-lazurio-shell=/i.test(html)
+          ? html
+          : html.replace(/<html\b/i, '<html data-lazurio-shell="host"');
+        return {
+          html: marked,
+          tags: [
+            {
+              tag: "script",
+              attrs: { type: "module", src: script },
+              injectTo: "body",
+            },
+            {
+              tag: "lazurio-frame",
+              attrs: {
+                version: "dev",
+                ...(options.lang === undefined ? {} : { lang: options.lang }),
+              },
+              injectTo: "body",
+            },
+          ],
+        };
+      },
+    },
   };
 }
 
