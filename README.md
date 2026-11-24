@@ -56,6 +56,7 @@ try {
 | `allowedHosts(id, env)` | the external origin's hostname (if any) plus `localhost`, `127.0.0.1` and `::1`; never a wildcard |
 | `viteShutdownPlugin({ closeTimeoutMs = 2000 })` | Vite plugin: SIGTERM/SIGINT closes every connection, bounds `server.close()` and exits 0 (Vite alone reports 128 + signal and an open keep-alive connection can hold `close()`); use in `vite.config.ts` `plugins` for dev and preview |
 | `viteServerOptions(id, env)` | `{ host, port, strictPort: true, allowedHosts }` for Vite `server` |
+| `bunDevFramePlugin({ shellScript, lang })`, `devFrameHtml(html, options)` | the same DEV frame for an App whose development run bundles its page with Bun (`[serve.static] plugins` in `bunfig.toml`); `devFrameHtml` is the page as a string |
 | `viteDevFramePlugin({ shellScript, lang })` | Vite plugin for `vite serve` only: the DEV frame of the Module's app (decision 0249). It inserts Lazurio's shell script and `<lazurio-frame version="dev">` and marks `<html data-lazurio-shell="host">`; a build, STAGING and PROD get nothing. Without `shellScript` it inserts nothing; throws `dev-frame-invalid` for an address that is not `https`, `http://127.0.0.1` or `http://localhost`, or a `lang` that is no language tag |
 | `astroServerOptions(id, env)` | `{ host, port, allowedHosts }` for Astro `server` |
 | `health(ready)` | `(req) => Promise<Response>`: 200 `{"status":"ok"}` when `ready()` is true, else (or when it throws) 503 `{"status":"starting"}` |
@@ -309,6 +310,13 @@ import { viteDevFramePlugin } from "@lazurio/module-kit";
 
 plugins: [react(), viteDevFramePlugin({ shellScript, lang: "cs" })];
 ```
+
+An App whose development run bundles its page with Bun (`Bun.serve` with an
+HTML import, as the templates do) uses `bunDevFramePlugin` instead, registered
+for development in its `bunfig.toml` (`[serve.static] plugins =
+["./dev-frame.ts"]`, `dev-frame.ts` being `export default
+bunDevFramePlugin({ shellScript })`). A build served as files does not pass
+through it.
 
 Where the dev page loads the shell script from is not decided yet: the
 Launchpad serves it only behind its gateway. Until it is, `shellScript` is the
