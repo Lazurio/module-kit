@@ -810,6 +810,27 @@ test("the frame goes before the real </body>, never into a script, a style, a co
   // A page without </body> gets the frame at its end; one without <html>
   // keeps its markup.
   expect(devFrameHtml("<p>x</p>", {}, DEV)).toBe(`<p>x</p>${INSERTED}`);
+  // A raw text element ends only at its real end tag, never at
+  // `</scripture>`.
+  const scripture =
+    '<html lang="cs"><body><script>const example = "</scripture></body><style>";</script><p>x</p></body></html>';
+  const scriptured = devFrameHtml(scripture, {}, DEV);
+  expect(scriptured).toContain(
+    'const example = "</scripture></body><style>";</script>',
+  );
+  expect(scriptured).toContain(`<p>x</p>${INSERTED}</body></html>`);
+  // The attribute is the tag's own, never text inside a quoted value.
+  const quoted =
+    '<html data-note="example data-lazurio-shell=page" lang="cs"><body></body></html>';
+  expect(devFrameHtml(quoted, {}, DEV)).toContain(
+    '<html data-lazurio-shell="host" data-note="example data-lazurio-shell=page" lang="cs">',
+  );
+  for (const own of [
+    "<html data-lazurio-shell=page>",
+    "<html lang=cs DATA-LAZURIO-SHELL = 'page'>",
+    "<html data-lazurio-shell>",
+  ])
+    expect(devFrameHtml(`${own}<body></body></html>`, {}, DEV)).toContain(own);
   // A page's own data-lazurio-shell stays.
   const own = page.replace("<html", '<html data-lazurio-shell="page"');
   expect(devFrameHtml(own, {}, DEV)).toContain(
@@ -824,11 +845,28 @@ test("valid language tags with several subtags are taken; anything else is refus
     "zh-Hant-TW",
     "en-US-u-hc-h12",
     "sr-Latn-RS",
+    "x-private",
+    "i-klingon",
+    "zh-min-nan",
+    "en-GB-oed",
+    "de-CH-1996",
+    "es-419",
+    "zh-yue-HK",
+    "en-a-bbb-x-a-ccc",
   ])
     expect(
       viteDevFramePlugin({ lang }, DEV).transformIndexHtml.handler(page),
     ).toContain(`<lazurio-buddy version="dev" lang="${lang}">`);
-  for (const lang of ['cs" x="y', "c", "en--US", "-cs", "toolongtag9"])
+  for (const lang of [
+    'cs" x="y',
+    "c",
+    "en--US",
+    "-cs",
+    "toolongtag9",
+    "en-x",
+    "i-unknown",
+    "de-a",
+  ])
     expect(() => viteDevFramePlugin({ lang }, DEV)).toThrow(ModuleKitError);
 });
 

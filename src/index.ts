@@ -342,9 +342,49 @@ export interface DevFrameOptions {
 
 const SHELL_SCRIPT =
   /^(https:\/\/[^\s"'<>]+|http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?\/[^\s"'<>]*)$/;
-// BCP 47 in its syntax: a language and any number of subtags of 1 to 8
-// letters or digits (zh-Hant-TW, en-US-u-hc-h12, sr-Latn-RS).
-const LANG = /^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$/;
+// BCP 47 (RFC 5646, section 2.1): a language tag (language with up to three
+// extended subtags, script, region, variants, extensions, private use), a
+// private-use tag (x-…), or one of the grandfathered tags.
+const GRANDFATHERED = [
+  "en-GB-oed",
+  "i-ami",
+  "i-bnn",
+  "i-default",
+  "i-enochian",
+  "i-hak",
+  "i-klingon",
+  "i-lux",
+  "i-mingo",
+  "i-navajo",
+  "i-pwn",
+  "i-tao",
+  "i-tay",
+  "i-tsu",
+  "sgn-BE-FR",
+  "sgn-BE-NL",
+  "sgn-CH-DE",
+  "art-lojban",
+  "cel-gaulish",
+  "no-bok",
+  "no-nyn",
+  "zh-guoyu",
+  "zh-hakka",
+  "zh-min",
+  "zh-min-nan",
+  "zh-xiang",
+];
+const LANGTAG =
+  "(?:[A-Za-z]{2,3}(?:-[A-Za-z]{3}){0,3}|[A-Za-z]{4}|[A-Za-z]{5,8})" +
+  "(?:-[A-Za-z]{4})?" +
+  "(?:-(?:[A-Za-z]{2}|[0-9]{3}))?" +
+  "(?:-(?:[A-Za-z0-9]{5,8}|[0-9][A-Za-z0-9]{3}))*" +
+  "(?:-[0-9A-WY-Za-wy-z](?:-[A-Za-z0-9]{2,8})+)*" +
+  "(?:-[Xx](?:-[A-Za-z0-9]{1,8})+)?";
+const PRIVATE_USE = "[Xx](?:-[A-Za-z0-9]{1,8})+";
+const LANG = new RegExp(`^(?:${LANGTAG}|${PRIVATE_USE})$`);
+const isLanguageTag = (value: string): boolean =>
+  LANG.test(value) ||
+  GRANDFATHERED.some((tag) => tag.toLowerCase() === value.toLowerCase());
 
 type DevFrame = Readonly<{ script: string; lang?: string }>;
 
@@ -354,7 +394,7 @@ function devFrameOf(
   options: DevFrameOptions,
   env: Environment,
 ): DevFrame | null {
-  if (options.lang !== undefined && !LANG.test(options.lang))
+  if (options.lang !== undefined && !isLanguageTag(options.lang))
     throw new ModuleKitError(
       "dev-frame-invalid",
       "lang must be a language tag",
@@ -445,19 +485,59 @@ function htmlTags(html: string): HtmlTag[] {
     tags.push({ name, end, start: open, stop: stop + 1 });
     at = stop + 1;
     if (!end && RAW_TEXT.has(name)) {
-      const close = lower.indexOf(`</${name}`, at);
-      at = close === -1 ? html.length : close;
+      const closing = new RegExp(`</${name}[\\t\\n\\f\\r />]`, "g");
+      closing.lastIndex = at;
+      const close = closing.exec(lower);
+      at = close === null ? html.length : close.index;
     }
   }
   return tags;
 }
 
+/** The attribute names of one start tag (`<name …>`), as HTML reads them:
+ * a quoted or unquoted value is skipped, so text inside it is no attribute. */
+function attributeNames(tag: string): string[] {
+  const names: string[] = [];
+  const space = /[\t\n\f\r ]/;
+  let at = tag.search(/[\t\n\f\r />]/);
+  if (at === -1) return names;
+  while (at < tag.length) {
+    while (
+      at < tag.length &&
+      (space.test(tag[at] as string) || tag[at] === "/")
+    )
+      at += 1;
+    if (at >= tag.length || tag[at] === ">") break;
+    const nameStart = at;
+    while (at < tag.length && !/[\t\n\f\r />=]/.test(tag[at] as string))
+      at += 1;
+    names.push(tag.slice(nameStart, at).toLowerCase());
+    while (at < tag.length && space.test(tag[at] as string)) at += 1;
+    if (tag[at] !== "=") continue;
+    at += 1;
+    while (at < tag.length && space.test(tag[at] as string)) at += 1;
+    const quote = tag[at];
+    if (quote === '"' || quote === "'") {
+      const close = tag.indexOf(quote, at + 1);
+      at = close === -1 ? tag.length : close + 1;
+    } else
+      while (at < tag.length && !/[\t\n\f\r >]/.test(tag[at] as string))
+        at += 1;
+  }
+  return names;
+}
+
 /** `<html data-lazurio-shell="host">` on the page's real `<html>` start tag,
- * unless it says otherwise; a page without one is left as it is. */
+ * unless it has that attribute already; a page without one is left as it
+ * is. */
 function markShellHost(html: string): string {
   const tag = htmlTags(html).find((item) => item.name === "html" && !item.end);
   if (tag === undefined) return html;
-  if (/\sdata-lazurio-shell\s*=/i.test(html.slice(tag.start, tag.stop)))
+  if (
+    attributeNames(html.slice(tag.start, tag.stop)).includes(
+      "data-lazurio-shell",
+    )
+  )
     return html;
   const at = tag.start + "<html".length;
   return `${html.slice(0, at)} data-lazurio-shell="host"${html.slice(at)}`;
