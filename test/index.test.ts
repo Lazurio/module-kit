@@ -819,6 +819,20 @@ test("the frame goes before the real </body>, never into a script, a style, a co
     'const example = "</scripture></body><style>";</script>',
   );
   expect(scriptured).toContain(`<p>x</p>${INSERTED}</body></html>`);
+  // Offsets never move: characters that grow when lowercased (İ is two code
+  // units in lower case) before a later script, and an end tag in capitals.
+  const grown = `<html><body><script>const name="${"İ".repeat(17)}";</script></body><script>const example="</body>";</script></html>`;
+  const framed = devFrameHtml(grown, {}, DEV);
+  expect(framed).toContain('<script>const example="</body>";</script>');
+  expect(framed).toContain(`";</script>${INSERTED}</body><script>`);
+  expect(framed.split(INSERTED)).toHaveLength(2);
+  expect(
+    devFrameHtml(
+      '<html><body><SCRIPT>const s = "</body>";</SCRIPT><p>y</p></body></html>',
+      {},
+      DEV,
+    ),
+  ).toContain(`<p>y</p>${INSERTED}</body></html>`);
   // The attribute is the tag's own, never text inside a quoted value.
   const quoted =
     '<html data-note="example data-lazurio-shell=page" lang="cs"><body></body></html>';

@@ -447,7 +447,6 @@ type HtmlTag = { name: string; end: boolean; start: number; stop: number };
  * raw text elements. Enough to find `<html>` and `</body>`; no tree. */
 function htmlTags(html: string): HtmlTag[] {
   const tags: HtmlTag[] = [];
-  const lower = html.toLowerCase();
   let at = 0;
   while (at < html.length) {
     const open = html.indexOf("<", at);
@@ -485,9 +484,12 @@ function htmlTags(html: string): HtmlTag[] {
     tags.push({ name, end, start: open, stop: stop + 1 });
     at = stop + 1;
     if (!end && RAW_TEXT.has(name)) {
-      const closing = new RegExp(`</${name}[\\t\\n\\f\\r />]`, "g");
+      // Searched in the page itself, case-insensitively: lowercasing the
+      // whole page would move every offset after a character that grows
+      // (İ becomes two code units).
+      const closing = new RegExp(`</${name}[\\t\\n\\f\\r />]`, "gi");
       closing.lastIndex = at;
-      const close = closing.exec(lower);
+      const close = closing.exec(html);
       at = close === null ? html.length : close.index;
     }
   }
