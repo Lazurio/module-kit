@@ -329,12 +329,15 @@ export interface DevFrameTag {
   injectTo: "body" | "head";
 }
 
-/** Where the DEV page loads Lazurio's shell script from. Undecided until the
- * Launchpad offers it on the Environment's loopback without the gateway's
- * admission; until then a Module states it, or the frame is not drawn. */
+/** Where the DEV page loads Lazurio's shell script from: the Launchpad on
+ * the Environment's loopback serves `shell.js` and its fonts without the
+ * gateway's admission (coordinator's decision of 2026-11-25), and Lazurio
+ * names the address to a Module's development run in
+ * `LAZURIO_RUNTIME_SHELL_SCRIPT`. */
 export interface DevFrameOptions {
   /** The address of Lazurio's `shell.js`, `https://…`, `http://127.0.0.1…`
-   * or `http://localhost…`. Absent: nothing is inserted. */
+   * or `http://localhost…`. Absent: `LAZURIO_RUNTIME_SHELL_SCRIPT`; without
+   * it, nothing is inserted. */
   readonly shellScript?: string;
   /** The frame's language, as `lang` of `<lazurio-buddy>`. */
   readonly lang?: string;
@@ -343,6 +346,22 @@ export interface DevFrameOptions {
 const SHELL_SCRIPT =
   /^(https:\/\/[^\s"'<>]+|http:\/\/(127\.0\.0\.1|localhost)(:[0-9]{1,5})?\/[^\s"'<>]*)$/;
 const LANG = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})?$/;
+
+/** The development run's variable that names Lazurio's shell script. */
+export const SHELL_SCRIPT_VARIABLE = "LAZURIO_RUNTIME_SHELL_SCRIPT";
+
+/** The options with `shellScript` taken from the development run when the
+ * Module states none. */
+function resolveDevFrame(
+  options: DevFrameOptions,
+  env: Environment,
+): DevFrameOptions {
+  if (options.shellScript !== undefined) return options;
+  const named = env[SHELL_SCRIPT_VARIABLE];
+  return named === undefined || named === ""
+    ? options
+    : { ...options, shellScript: named };
+}
 
 function checkDevFrame(options: DevFrameOptions): void {
   const script = options.shellScript;
@@ -397,7 +416,10 @@ const escapeAttribute = (value: string) =>
  * its text come only from the shell's element. A Module can leave the plugin
  * out: it frames, it does not enforce. Use in `vite.config.ts`:
  * `plugins: [react(), viteDevFramePlugin({ shellScript })]`. */
-export function viteDevFramePlugin(options: DevFrameOptions = {}): {
+export function viteDevFramePlugin(
+  given: DevFrameOptions = {},
+  env: Environment = process.env,
+): {
   name: string;
   apply: "serve";
   transformIndexHtml: {
@@ -405,6 +427,7 @@ export function viteDevFramePlugin(options: DevFrameOptions = {}): {
     handler: (html: string) => { html: string; tags: DevFrameTag[] };
   };
 } {
+  const options = resolveDevFrame(given, env);
   checkDevFrame(options);
   return {
     name: "lazurio-module-kit-dev-frame",
@@ -454,10 +477,14 @@ export interface DevFramePluginBuild {
  * `[serve.static] plugins = ["./dev-frame.ts"]`, where `dev-frame.ts` is
  * `export default bunDevFramePlugin({ shellScript })`. A build served as
  * files does not pass through it. */
-export function bunDevFramePlugin(options: DevFrameOptions = {}): {
+export function bunDevFramePlugin(
+  given: DevFrameOptions = {},
+  env: Environment = process.env,
+): {
   name: string;
   setup: (build: DevFramePluginBuild) => void;
 } {
+  const options = resolveDevFrame(given, env);
   checkDevFrame(options);
   return {
     name: "lazurio-module-kit-dev-frame",

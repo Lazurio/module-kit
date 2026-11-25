@@ -319,9 +319,10 @@ for development in its `bunfig.toml` (`[serve.static] plugins =
 bunDevFramePlugin({ shellScript })`). A build served as files does not pass
 through it.
 
-Where the dev page loads the shell script from is not decided yet: the
-Launchpad serves it only behind its gateway. Until it is, `shellScript` is the
-Module's to state, and without it nothing is inserted. A Module can leave the
+Lazurio's Launchpad serves the shell script and its fonts on the
+Environment's loopback without its gateway, and names the address to a
+Module's development run in `LAZURIO_RUNTIME_SHELL_SCRIPT`; both plugins read
+it when `shellScript` is not given. Without either, nothing is inserted. A Module can leave the
 plugin out; the frame marks DEV, it does not enforce it.
 
 ## Astro

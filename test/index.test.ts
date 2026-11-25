@@ -846,3 +846,32 @@ test("bunDevFramePlugin serves the same DEV frame from Bun's HTML bundling in de
   );
   await rm(dir, { recursive: true, force: true });
 });
+
+test("the DEV frame takes the shell script from LAZURIO_RUNTIME_SHELL_SCRIPT when the Module states none", () => {
+  const env = { LAZURIO_RUNTIME_SHELL_SCRIPT: SHELL };
+  expect(
+    viteDevFramePlugin({}, env).transformIndexHtml.handler(page).tags[0],
+  ).toEqual({
+    tag: "script",
+    attrs: { type: "module", src: SHELL },
+    injectTo: "body",
+  });
+  // The Module's own address wins; none at all inserts nothing.
+  const own = "https://launchpad.example.test/.lazurio/shell.js";
+  expect(
+    viteDevFramePlugin({ shellScript: own }, env).transformIndexHtml.handler(
+      page,
+    ).tags[0]?.attrs?.src,
+  ).toBe(own);
+  expect(viteDevFramePlugin({}, {}).transformIndexHtml.handler(page)).toEqual({
+    html: page,
+    tags: [],
+  });
+  // A wrong address from the run is refused like a Module's own.
+  expect(() =>
+    bunDevFramePlugin(
+      {},
+      { LAZURIO_RUNTIME_SHELL_SCRIPT: "http://x.test/s.js" },
+    ),
+  ).toThrow(ModuleKitError);
+});
