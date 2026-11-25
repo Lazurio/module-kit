@@ -56,8 +56,8 @@ try {
 | `allowedHosts(id, env)` | the external origin's hostname (if any) plus `localhost`, `127.0.0.1` and `::1`; never a wildcard |
 | `viteShutdownPlugin({ closeTimeoutMs = 2000 })` | Vite plugin: SIGTERM/SIGINT closes every connection, bounds `server.close()` and exits 0 (Vite alone reports 128 + signal and an open keep-alive connection can hold `close()`); use in `vite.config.ts` `plugins` for dev and preview |
 | `viteServerOptions(id, env)` | `{ host, port, strictPort: true, allowedHosts }` for Vite `server` |
-| `bunDevFramePlugin({ shellScript, lang })`, `devFrameHtml(html, options)` | the same DEV frame for an App whose development run bundles its page with Bun (`[serve.static] plugins` in `bunfig.toml`); `devFrameHtml` is the page as a string |
-| `viteDevFramePlugin({ shellScript, lang })` | Vite plugin for `vite serve` only: the DEV frame of the Module's app (decision 0249). It inserts Lazurio's shell script and `<lazurio-buddy version="dev">` and marks `<html data-lazurio-shell="host">`; a build, STAGING and PROD get nothing. Without `shellScript` it inserts nothing; throws `dev-frame-invalid` for an address that is not `https`, `http://127.0.0.1` or `http://localhost`, or a `lang` that is no language tag |
+| `bunDevFramePlugin({ lang })`, `devFrameHtml(html, options)` | the same DEV frame for an App whose development run bundles its page with Bun (`[serve.static] plugins` in `bunfig.toml`); `devFrameHtml` is the page as a string, the tags before its real `</body>` |
+| `viteDevFramePlugin({ lang })` | Vite plugin for `vite serve`: the DEV frame of the Module's app (decision 0249). Only in a DEV run, where `LAZURIO_RUNTIME_SHELL_SCRIPT` names Lazurio's shell script, it inserts that script and `<lazurio-buddy version="dev">` and marks `<html data-lazurio-shell="host">`; any other run, a build, STAGING and PROD get nothing. Throws `dev-frame-invalid` for an address that is not `https` or the loopback, or a `lang` that is no language tag |
 | `astroServerOptions(id, env)` | `{ host, port, allowedHosts }` for Astro `server` |
 | `health(ready)` | `(req) => Promise<Response>`: 200 `{"status":"ok"}` when `ready()` is true, else (or when it throws) 503 `{"status":"starting"}` |
 | `withHealth(handler, path = "/healthz", ready = () => true)` | a `Bun.serve` fetch handler that answers `path` with `health(ready)` and passes everything else on |
@@ -303,27 +303,26 @@ export default defineConfig(({ command }) => ({
 localhost in the Environment's browser) wears a blue dashed frame with the
 label DEV (decision 0249, addendum of 2026-11-22). Lazurio's
 `<lazurio-buddy>` element from the shell script draws it (the one element of
-Buddy and the frame); module-kit draws nothing of
-its own and inserts it only while serving:
+Buddy and the frame); module-kit draws nothing of its own.
 
 ```ts
 import { viteDevFramePlugin } from "@lazurio/module-kit";
 
-plugins: [react(), viteDevFramePlugin({ shellScript, lang: "cs" })];
+plugins: [react(), viteDevFramePlugin({ lang: "cs" })];
 ```
 
 An App whose development run bundles its page with Bun (`Bun.serve` with an
 HTML import, as the templates do) uses `bunDevFramePlugin` instead, registered
-for development in its `bunfig.toml` (`[serve.static] plugins =
-["./dev-frame.ts"]`, `dev-frame.ts` being `export default
-bunDevFramePlugin({ shellScript })`). A build served as files does not pass
-through it.
+in its `bunfig.toml` (`[serve.static] plugins = ["./dev-frame.ts"]`,
+`dev-frame.ts` being `export default bunDevFramePlugin({ lang: "cs" })`).
 
-Lazurio's Launchpad serves the shell script and its fonts on the
-Environment's loopback without its gateway, and names the address to a
-Module's development run in `LAZURIO_RUNTIME_SHELL_SCRIPT`; both plugins read
-it when `shellScript` is not given. Without either, nothing is inserted. A Module can leave the
-plugin out; the frame marks DEV, it does not enforce it.
+Both insert only in a DEV run: the agent that starts the Module's app from a
+worktree sets `LAZURIO_RUNTIME_SHELL_SCRIPT` to the address of the shell
+script the Launchpad serves on the Environment's loopback (the Environment's
+manual names it), and Lazurio removes the variable from every run it starts
+itself. STAGING and PROD therefore never get the frame, also from a shared
+`vite.config.ts` or `bunfig.toml`. A Module can leave the plugin out; the
+frame marks DEV, it does not enforce it.
 
 ## Astro
 

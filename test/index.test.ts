@@ -750,87 +750,114 @@ import {
 
 const page =
   '<!doctype html>\n<html lang="cs">\n<head><title>x</title></head>\n<body><div id="root"></div></body>\n</html>';
-const SHELL = "http://127.0.0.1:43000/.lazurio/shell.js";
+const SHELL = "http://127.0.0.1:20000/.lazurio/shell.js";
+const DEV = { LAZURIO_RUNTIME_SHELL_SCRIPT: SHELL };
+const INSERTED = `<script type="module" src="${SHELL}"></script><lazurio-buddy version="dev"></lazurio-buddy>`;
 
-test("viteDevFramePlugin runs only while serving, and a build gets nothing", () => {
-  const plugin = viteDevFramePlugin({ shellScript: SHELL });
+test("viteDevFramePlugin runs only while serving", () => {
+  const plugin = viteDevFramePlugin({}, DEV);
   expect(plugin.apply).toBe("serve");
   expect(plugin.name).toBe("lazurio-module-kit-dev-frame");
   expect(plugin.transformIndexHtml.order).toBe("post");
 });
 
-test("viteDevFramePlugin inserts the shell script and <lazurio-buddy version=dev>, and draws nothing itself", () => {
-  const { html, tags } = viteDevFramePlugin({
-    shellScript: SHELL,
-    lang: "cs",
-  }).transformIndexHtml.handler(page);
+test("in a DEV run both plugins insert the shell script and <lazurio-buddy version=dev>, and draw nothing themselves", () => {
+  const html = viteDevFramePlugin(
+    { lang: "cs" },
+    DEV,
+  ).transformIndexHtml.handler(page);
   expect(html).toContain('<html data-lazurio-shell="host" lang="cs">');
-  expect(tags).toEqual([
-    {
-      tag: "script",
-      attrs: { type: "module", src: SHELL },
-      injectTo: "body",
-    },
-    {
-      tag: "lazurio-buddy",
-      attrs: { version: "dev", lang: "cs" },
-      injectTo: "body",
-    },
-  ]);
-  // No style, colour or text of module-kit's own: the shell's element draws.
-  expect(JSON.stringify(tags)).not.toMatch(/style|color|DEV/);
+  const inserted = `<script type="module" src="${SHELL}"></script><lazurio-buddy version="dev" lang="cs"></lazurio-buddy>`;
+  expect(html).toContain(`${inserted}</body>`);
+  expect(devFrameHtml(page, { lang: "cs" }, DEV)).toBe(html);
+  // Nothing of module-kit's own beyond the two tags and the mark: no style,
+  // colour or text.
+  expect(html.replace(inserted, "")).toBe(
+    page.replace("<html", '<html data-lazurio-shell="host"'),
+  );
+  expect(inserted).not.toMatch(/style|color|DEV/);
 });
 
-test("viteDevFramePlugin without a shell script inserts nothing, and keeps a page's own data-lazurio-shell", () => {
-  expect(viteDevFramePlugin().transformIndexHtml.handler(page)).toEqual({
-    html: page,
-    tags: [],
-  });
+test("a run that is not DEV gets nothing, also from a shared config (STAGING, PROD)", () => {
+  for (const env of [{}, { LAZURIO_RUNTIME_SHELL_SCRIPT: "" }]) {
+    expect(
+      viteDevFramePlugin({ lang: "cs" }, env).transformIndexHtml.handler(page),
+    ).toBe(page);
+    expect(devFrameHtml(page, { lang: "cs" }, env)).toBe(page);
+  }
+});
+
+test("the frame goes before the real </body>, never into a script, a style, a comment or an attribute", () => {
+  const tricky = [
+    "<!doctype html>",
+    "<!-- <html> and </body> in a comment -->",
+    '<html lang="cs"><head><title>a </body> title</title>',
+    '<style>.x::after { content: "</body>"; }</style></head>',
+    '<body data-note="a > b </body>"><script>const example = "</body>";</script>',
+    "<textarea></body></textarea><p>text</p></body></html>",
+  ].join("\n");
+  const html = devFrameHtml(tricky, {}, DEV);
+  expect(html.split(INSERTED)).toHaveLength(2);
+  expect(html).toContain(`<p>text</p>${INSERTED}</body></html>`);
+  // The Vite plugin serves the same page: Vite's own tag injection would put
+  // the tags into the script's string.
+  expect(viteDevFramePlugin({}, DEV).transformIndexHtml.handler(tricky)).toBe(
+    html,
+  );
+  expect(html).toContain('<script>const example = "</body>";</script>');
+  expect(html).toContain("<!-- <html> and </body> in a comment -->");
+  expect(html).toContain('<html data-lazurio-shell="host" lang="cs">');
+  // A page without </body> gets the frame at its end; one without <html>
+  // keeps its markup.
+  expect(devFrameHtml("<p>x</p>", {}, DEV)).toBe(`<p>x</p>${INSERTED}`);
+  // A page's own data-lazurio-shell stays.
   const own = page.replace("<html", '<html data-lazurio-shell="page"');
-  const { html, tags } = viteDevFramePlugin({
-    shellScript: SHELL,
-  }).transformIndexHtml.handler(own);
-  expect(html).toBe(own);
-  expect(tags[1]).toEqual({
-    tag: "lazurio-buddy",
-    attrs: { version: "dev" },
-    injectTo: "body",
-  });
+  expect(devFrameHtml(own, {}, DEV)).toContain(
+    '<html data-lazurio-shell="page" lang="cs">',
+  );
 });
 
-test("viteDevFramePlugin refuses a shell script elsewhere and a lang that is no language tag", () => {
-  for (const shellScript of [
+test("valid language tags with several subtags are taken; anything else is refused", () => {
+  for (const lang of [
+    "cs",
+    "en-US",
+    "zh-Hant-TW",
+    "en-US-u-hc-h12",
+    "sr-Latn-RS",
+  ])
+    expect(
+      viteDevFramePlugin({ lang }, DEV).transformIndexHtml.handler(page),
+    ).toContain(`<lazurio-buddy version="dev" lang="${lang}">`);
+  for (const lang of ['cs" x="y', "c", "en--US", "-cs", "toolongtag9"])
+    expect(() => viteDevFramePlugin({ lang }, DEV)).toThrow(ModuleKitError);
+});
+
+test("a shell script elsewhere than https or the loopback is refused", () => {
+  for (const script of [
     "http://example.com/shell.js",
     "javascript:alert(1)",
     'https://x.test/a" onload="x',
     "/.lazurio/shell.js",
   ])
-    expect(() => viteDevFramePlugin({ shellScript })).toThrow(ModuleKitError);
-  expect(() =>
-    viteDevFramePlugin({ shellScript: SHELL, lang: 'cs" x="y' }),
-  ).toThrow(ModuleKitError);
-  expect(() =>
-    viteDevFramePlugin({
-      shellScript: "https://launchpad.example.test/.lazurio/shell.js",
-    }),
-  ).not.toThrow();
+    expect(() =>
+      bunDevFramePlugin({}, { LAZURIO_RUNTIME_SHELL_SCRIPT: script }),
+    ).toThrow(ModuleKitError);
+  for (const script of [
+    "https://launchpad.example.test/.lazurio/shell.js",
+    "http://localhost:4174/.lazurio/shell.js",
+    "http://[::1]:20000/.lazurio/shell.js",
+  ])
+    expect(() =>
+      bunDevFramePlugin({}, { LAZURIO_RUNTIME_SHELL_SCRIPT: script }),
+    ).not.toThrow();
 });
 
-test("bunDevFramePlugin serves the same DEV frame from Bun's HTML bundling in development", async () => {
-  const html = devFrameHtml(page, { shellScript: SHELL, lang: "cs" });
-  expect(html).toContain('<html data-lazurio-shell="host" lang="cs">');
-  expect(html).toContain(
-    `<script type="module" src="${SHELL}"></script><lazurio-buddy version="dev" lang="cs"></lazurio-buddy></body>`,
-  );
-  expect(devFrameHtml(page, {})).toBe(page);
-  expect(() =>
-    devFrameHtml(page, { shellScript: "http://example.com/x.js" }),
-  ).toThrow(ModuleKitError);
+test("bunDevFramePlugin hands the framed page to Bun's HTML loader", async () => {
   const dir = await mkdtemp(join(tmpdir(), "module-kit-frame-"));
   const file = join(dir, "index.html");
   await writeFile(file, page);
   let loaded: { contents: string; loader: string } | undefined;
-  bunDevFramePlugin({ shellScript: SHELL }).setup({
+  bunDevFramePlugin({}, DEV).setup({
     onLoad: (constraints, callback) => {
       expect(constraints.filter.test("x/index.html")).toBe(true);
       expect(constraints.filter.test("x/main.ts")).toBe(false);
@@ -841,37 +868,6 @@ test("bunDevFramePlugin serves the same DEV frame from Bun's HTML bundling in de
   });
   await Bun.sleep(20);
   expect(loaded?.loader).toBe("html");
-  expect(loaded?.contents).toContain(
-    '<lazurio-buddy version="dev"></lazurio-buddy>',
-  );
+  expect(loaded?.contents).toContain(`${INSERTED}</body>`);
   await rm(dir, { recursive: true, force: true });
-});
-
-test("the DEV frame takes the shell script from LAZURIO_RUNTIME_SHELL_SCRIPT when the Module states none", () => {
-  const env = { LAZURIO_RUNTIME_SHELL_SCRIPT: SHELL };
-  expect(
-    viteDevFramePlugin({}, env).transformIndexHtml.handler(page).tags[0],
-  ).toEqual({
-    tag: "script",
-    attrs: { type: "module", src: SHELL },
-    injectTo: "body",
-  });
-  // The Module's own address wins; none at all inserts nothing.
-  const own = "https://launchpad.example.test/.lazurio/shell.js";
-  expect(
-    viteDevFramePlugin({ shellScript: own }, env).transformIndexHtml.handler(
-      page,
-    ).tags[0]?.attrs?.src,
-  ).toBe(own);
-  expect(viteDevFramePlugin({}, {}).transformIndexHtml.handler(page)).toEqual({
-    html: page,
-    tags: [],
-  });
-  // A wrong address from the run is refused like a Module's own.
-  expect(() =>
-    bunDevFramePlugin(
-      {},
-      { LAZURIO_RUNTIME_SHELL_SCRIPT: "http://x.test/s.js" },
-    ),
-  ).toThrow(ModuleKitError);
 });
