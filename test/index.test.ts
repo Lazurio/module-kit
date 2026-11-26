@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   allowedHosts,
   appAccess,
@@ -735,4 +738,188 @@ describe("appAccess", () => {
       "listener-missing",
     );
   });
+});
+
+// ---------------------------------------------------------------- viteDevFramePlugin
+
+import {
+  bunDevFramePlugin,
+  devFrameHtml,
+  viteDevFramePlugin,
+} from "../src/index";
+
+const page =
+  '<!doctype html>\n<html lang="cs">\n<head><title>x</title></head>\n<body><div id="root"></div></body>\n</html>';
+const SHELL = "http://127.0.0.1:20000/.lazurio/shell.js";
+const DEV = { LAZURIO_RUNTIME_SHELL_SCRIPT: SHELL };
+const INSERTED = `<script type="module" src="${SHELL}"></script><lazurio-buddy version="dev"></lazurio-buddy>`;
+
+test("viteDevFramePlugin runs only while serving", () => {
+  const plugin = viteDevFramePlugin({}, DEV);
+  expect(plugin.apply).toBe("serve");
+  expect(plugin.name).toBe("lazurio-module-kit-dev-frame");
+  expect(plugin.transformIndexHtml.order).toBe("post");
+});
+
+test("in a DEV run both plugins insert the shell script and <lazurio-buddy version=dev>, and draw nothing themselves", () => {
+  const html = viteDevFramePlugin(
+    { lang: "cs" },
+    DEV,
+  ).transformIndexHtml.handler(page);
+  expect(html).toContain('<html data-lazurio-shell="host" lang="cs">');
+  const inserted = `<script type="module" src="${SHELL}"></script><lazurio-buddy version="dev" lang="cs"></lazurio-buddy>`;
+  expect(html).toContain(`${inserted}</body>`);
+  expect(devFrameHtml(page, { lang: "cs" }, DEV)).toBe(html);
+  // Nothing of module-kit's own beyond the two tags and the mark: no style,
+  // colour or text.
+  expect(html.replace(inserted, "")).toBe(
+    page.replace("<html", '<html data-lazurio-shell="host"'),
+  );
+  expect(inserted).not.toMatch(/style|color|DEV/);
+});
+
+test("a run that is not DEV gets nothing, also from a shared config (STAGING, PROD)", () => {
+  for (const env of [{}, { LAZURIO_RUNTIME_SHELL_SCRIPT: "" }]) {
+    expect(
+      viteDevFramePlugin({ lang: "cs" }, env).transformIndexHtml.handler(page),
+    ).toBe(page);
+    expect(devFrameHtml(page, { lang: "cs" }, env)).toBe(page);
+  }
+});
+
+test("the frame goes before the real </body>, never into a script, a style, a comment or an attribute", () => {
+  const tricky = [
+    "<!doctype html>",
+    "<!-- <html> and </body> in a comment -->",
+    '<html lang="cs"><head><title>a </body> title</title>',
+    '<style>.x::after { content: "</body>"; }</style></head>',
+    '<body data-note="a > b </body>"><script>const example = "</body>";</script>',
+    "<textarea></body></textarea><p>text</p></body></html>",
+  ].join("\n");
+  const html = devFrameHtml(tricky, {}, DEV);
+  expect(html.split(INSERTED)).toHaveLength(2);
+  expect(html).toContain(`<p>text</p>${INSERTED}</body></html>`);
+  // The Vite plugin serves the same page: Vite's own tag injection would put
+  // the tags into the script's string.
+  expect(viteDevFramePlugin({}, DEV).transformIndexHtml.handler(tricky)).toBe(
+    html,
+  );
+  expect(html).toContain('<script>const example = "</body>";</script>');
+  expect(html).toContain("<!-- <html> and </body> in a comment -->");
+  expect(html).toContain('<html data-lazurio-shell="host" lang="cs">');
+  // A page without </body> gets the frame at its end; one without <html>
+  // keeps its markup.
+  expect(devFrameHtml("<p>x</p>", {}, DEV)).toBe(`<p>x</p>${INSERTED}`);
+  // A raw text element ends only at its real end tag, never at
+  // `</scripture>`.
+  const scripture =
+    '<html lang="cs"><body><script>const example = "</scripture></body><style>";</script><p>x</p></body></html>';
+  const scriptured = devFrameHtml(scripture, {}, DEV);
+  expect(scriptured).toContain(
+    'const example = "</scripture></body><style>";</script>',
+  );
+  expect(scriptured).toContain(`<p>x</p>${INSERTED}</body></html>`);
+  // Offsets never move: characters that grow when lowercased (İ is two code
+  // units in lower case) before a later script, and an end tag in capitals.
+  const grown = `<html><body><script>const name="${"İ".repeat(17)}";</script></body><script>const example="</body>";</script></html>`;
+  const framed = devFrameHtml(grown, {}, DEV);
+  expect(framed).toContain('<script>const example="</body>";</script>');
+  expect(framed).toContain(`";</script>${INSERTED}</body><script>`);
+  expect(framed.split(INSERTED)).toHaveLength(2);
+  expect(
+    devFrameHtml(
+      '<html><body><SCRIPT>const s = "</body>";</SCRIPT><p>y</p></body></html>',
+      {},
+      DEV,
+    ),
+  ).toContain(`<p>y</p>${INSERTED}</body></html>`);
+  // The attribute is the tag's own, never text inside a quoted value.
+  const quoted =
+    '<html data-note="example data-lazurio-shell=page" lang="cs"><body></body></html>';
+  expect(devFrameHtml(quoted, {}, DEV)).toContain(
+    '<html data-lazurio-shell="host" data-note="example data-lazurio-shell=page" lang="cs">',
+  );
+  for (const own of [
+    "<html data-lazurio-shell=page>",
+    "<html lang=cs DATA-LAZURIO-SHELL = 'page'>",
+    "<html data-lazurio-shell>",
+  ])
+    expect(devFrameHtml(`${own}<body></body></html>`, {}, DEV)).toContain(own);
+  // A page's own data-lazurio-shell stays.
+  const own = page.replace("<html", '<html data-lazurio-shell="page"');
+  expect(devFrameHtml(own, {}, DEV)).toContain(
+    '<html data-lazurio-shell="page" lang="cs">',
+  );
+});
+
+test("valid language tags with several subtags are taken; anything else is refused", () => {
+  for (const lang of [
+    "cs",
+    "en-US",
+    "zh-Hant-TW",
+    "en-US-u-hc-h12",
+    "sr-Latn-RS",
+    "x-private",
+    "i-klingon",
+    "zh-min-nan",
+    "en-GB-oed",
+    "de-CH-1996",
+    "es-419",
+    "zh-yue-HK",
+    "en-a-bbb-x-a-ccc",
+  ])
+    expect(
+      viteDevFramePlugin({ lang }, DEV).transformIndexHtml.handler(page),
+    ).toContain(`<lazurio-buddy version="dev" lang="${lang}">`);
+  for (const lang of [
+    'cs" x="y',
+    "c",
+    "en--US",
+    "-cs",
+    "toolongtag9",
+    "en-x",
+    "i-unknown",
+    "de-a",
+  ])
+    expect(() => viteDevFramePlugin({ lang }, DEV)).toThrow(ModuleKitError);
+});
+
+test("a shell script elsewhere than https or the loopback is refused", () => {
+  for (const script of [
+    "http://example.com/shell.js",
+    "javascript:alert(1)",
+    'https://x.test/a" onload="x',
+    "/.lazurio/shell.js",
+  ])
+    expect(() =>
+      bunDevFramePlugin({}, { LAZURIO_RUNTIME_SHELL_SCRIPT: script }),
+    ).toThrow(ModuleKitError);
+  for (const script of [
+    "https://launchpad.example.test/.lazurio/shell.js",
+    "http://localhost:4174/.lazurio/shell.js",
+    "http://[::1]:20000/.lazurio/shell.js",
+  ])
+    expect(() =>
+      bunDevFramePlugin({}, { LAZURIO_RUNTIME_SHELL_SCRIPT: script }),
+    ).not.toThrow();
+});
+
+test("bunDevFramePlugin hands the framed page to Bun's HTML loader", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "module-kit-frame-"));
+  const file = join(dir, "index.html");
+  await writeFile(file, page);
+  let loaded: { contents: string; loader: string } | undefined;
+  bunDevFramePlugin({}, DEV).setup({
+    onLoad: (constraints, callback) => {
+      expect(constraints.filter.test("x/index.html")).toBe(true);
+      expect(constraints.filter.test("x/main.ts")).toBe(false);
+      void callback({ path: file }).then((result) => {
+        loaded = result;
+      });
+    },
+  });
+  await Bun.sleep(20);
+  expect(loaded?.loader).toBe("html");
+  expect(loaded?.contents).toContain(`${INSERTED}</body>`);
+  await rm(dir, { recursive: true, force: true });
 });

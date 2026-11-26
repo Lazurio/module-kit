@@ -12,7 +12,8 @@ type Environment = Readonly<Record<string, string | undefined>>;
 export type ModuleKitErrorCode =
   | "listener-missing"
   | "listeners-invalid"
-  | "environment-missing";
+  | "environment-missing"
+  | "dev-frame-invalid";
 
 export class ModuleKitError extends Error {
   readonly code: ModuleKitErrorCode;
@@ -318,6 +319,330 @@ export function viteShutdownPlugin(
     name: "lazurio-module-kit-shutdown",
     configureServer: attach,
     configurePreviewServer: attach,
+  };
+}
+
+/** One tag of the DEV frame: its name and its attributes. */
+export interface DevFrameTag {
+  tag: string;
+  attrs: Record<string, string>;
+}
+
+/** The variable that names Lazurio's shell script to a DEV run: the agent
+ * sets it when it starts the Module's app from a worktree, with the address
+ * the Environment's manual gives; Lazurio removes it from every run it starts
+ * itself (STAGING, PROD). Its presence is what makes a run DEV, so a Module
+ * cannot turn the frame on anywhere else. */
+export const SHELL_SCRIPT_VARIABLE = "LAZURIO_RUNTIME_SHELL_SCRIPT";
+
+export interface DevFrameOptions {
+  /** The frame's language, as `lang` of `<lazurio-buddy>`: a BCP 47 tag. */
+  readonly lang?: string;
+}
+
+const SHELL_SCRIPT =
+  /^(https:\/\/[^\s"'<>]+|http:\/\/(127\.0\.0\.1|localhost|\[::1\])(:[0-9]{1,5})?\/[^\s"'<>]*)$/;
+// BCP 47 (RFC 5646, section 2.1): a language tag (language with up to three
+// extended subtags, script, region, variants, extensions, private use), a
+// private-use tag (x-…), or one of the grandfathered tags.
+const GRANDFATHERED = [
+  "en-GB-oed",
+  "i-ami",
+  "i-bnn",
+  "i-default",
+  "i-enochian",
+  "i-hak",
+  "i-klingon",
+  "i-lux",
+  "i-mingo",
+  "i-navajo",
+  "i-pwn",
+  "i-tao",
+  "i-tay",
+  "i-tsu",
+  "sgn-BE-FR",
+  "sgn-BE-NL",
+  "sgn-CH-DE",
+  "art-lojban",
+  "cel-gaulish",
+  "no-bok",
+  "no-nyn",
+  "zh-guoyu",
+  "zh-hakka",
+  "zh-min",
+  "zh-min-nan",
+  "zh-xiang",
+];
+const LANGTAG =
+  "(?:[A-Za-z]{2,3}(?:-[A-Za-z]{3}){0,3}|[A-Za-z]{4}|[A-Za-z]{5,8})" +
+  "(?:-[A-Za-z]{4})?" +
+  "(?:-(?:[A-Za-z]{2}|[0-9]{3}))?" +
+  "(?:-(?:[A-Za-z0-9]{5,8}|[0-9][A-Za-z0-9]{3}))*" +
+  "(?:-[0-9A-WY-Za-wy-z](?:-[A-Za-z0-9]{2,8})+)*" +
+  "(?:-[Xx](?:-[A-Za-z0-9]{1,8})+)?";
+const PRIVATE_USE = "[Xx](?:-[A-Za-z0-9]{1,8})+";
+const LANG = new RegExp(`^(?:${LANGTAG}|${PRIVATE_USE})$`);
+const isLanguageTag = (value: string): boolean =>
+  LANG.test(value) ||
+  GRANDFATHERED.some((tag) => tag.toLowerCase() === value.toLowerCase());
+
+type DevFrame = Readonly<{ script: string; lang?: string }>;
+
+/** The DEV frame of this run: the shell script's address and the language,
+ * or null where the run is not DEV (no `LAZURIO_RUNTIME_SHELL_SCRIPT`). */
+function devFrameOf(
+  options: DevFrameOptions,
+  env: Environment,
+): DevFrame | null {
+  if (options.lang !== undefined && !isLanguageTag(options.lang))
+    throw new ModuleKitError(
+      "dev-frame-invalid",
+      "lang must be a language tag",
+    );
+  const script = env[SHELL_SCRIPT_VARIABLE];
+  if (script === undefined || script === "") return null;
+  if (!SHELL_SCRIPT.test(script))
+    throw new ModuleKitError(
+      "dev-frame-invalid",
+      `${SHELL_SCRIPT_VARIABLE} must be an https URL or an http URL on the loopback`,
+    );
+  return options.lang === undefined
+    ? { script }
+    : { script, lang: options.lang };
+}
+
+/** The two tags of the DEV frame: the one shape both plugins insert. */
+function devFrameTags(frame: DevFrame): DevFrameTag[] {
+  return [
+    { tag: "script", attrs: { type: "module", src: frame.script } },
+    {
+      tag: "lazurio-buddy",
+      attrs: {
+        version: "dev",
+        ...(frame.lang === undefined ? {} : { lang: frame.lang }),
+      },
+    },
+  ];
+}
+
+// Elements whose content is text, never markup: a `</body>` or `<html` in
+// them is not a tag (HTML's raw text and escapable raw text elements).
+const RAW_TEXT = new Set([
+  "script",
+  "style",
+  "textarea",
+  "title",
+  "xmp",
+  "iframe",
+  "noembed",
+  "noframes",
+  "noscript",
+  "plaintext",
+]);
+
+type HtmlTag = { name: string; end: boolean; start: number; stop: number };
+
+/** The tags of a page as HTML reads them: each start or end tag's name and
+ * where it begins and ends, skipping comments, doctypes and the content of
+ * raw text elements. Enough to find `<html>` and `</body>`; no tree. */
+function htmlTags(html: string): HtmlTag[] {
+  const tags: HtmlTag[] = [];
+  let at = 0;
+  while (at < html.length) {
+    const open = html.indexOf("<", at);
+    if (open === -1) break;
+    if (html.startsWith("<!--", open)) {
+      const close = html.indexOf("-->", open + 4);
+      at = close === -1 ? html.length : close + 3;
+      continue;
+    }
+    if (html[open + 1] === "!" || html[open + 1] === "?") {
+      const close = html.indexOf(">", open);
+      at = close === -1 ? html.length : close + 1;
+      continue;
+    }
+    const match = /^<(\/?)([A-Za-z][A-Za-z0-9-]*)/.exec(
+      html.slice(open, open + 64),
+    );
+    if (match === null) {
+      at = open + 1;
+      continue;
+    }
+    // The tag ends at the first `>` outside a quoted attribute value.
+    let stop = open + match[0].length;
+    let quote: string | null = null;
+    while (stop < html.length) {
+      const c = html[stop];
+      if (quote !== null) {
+        if (c === quote) quote = null;
+      } else if (c === '"' || c === "'") quote = c;
+      else if (c === ">") break;
+      stop += 1;
+    }
+    const name = (match[2] as string).toLowerCase();
+    const end = match[1] === "/";
+    tags.push({ name, end, start: open, stop: stop + 1 });
+    at = stop + 1;
+    if (!end && RAW_TEXT.has(name)) {
+      // Searched in the page itself, case-insensitively: lowercasing the
+      // whole page would move every offset after a character that grows
+      // (İ becomes two code units).
+      const closing = new RegExp(`</${name}[\\t\\n\\f\\r />]`, "gi");
+      closing.lastIndex = at;
+      const close = closing.exec(html);
+      at = close === null ? html.length : close.index;
+    }
+  }
+  return tags;
+}
+
+/** The attribute names of one start tag (`<name …>`), as HTML reads them:
+ * a quoted or unquoted value is skipped, so text inside it is no attribute. */
+function attributeNames(tag: string): string[] {
+  const names: string[] = [];
+  const space = /[\t\n\f\r ]/;
+  let at = tag.search(/[\t\n\f\r />]/);
+  if (at === -1) return names;
+  while (at < tag.length) {
+    while (
+      at < tag.length &&
+      (space.test(tag[at] as string) || tag[at] === "/")
+    )
+      at += 1;
+    if (at >= tag.length || tag[at] === ">") break;
+    const nameStart = at;
+    while (at < tag.length && !/[\t\n\f\r />=]/.test(tag[at] as string))
+      at += 1;
+    names.push(tag.slice(nameStart, at).toLowerCase());
+    while (at < tag.length && space.test(tag[at] as string)) at += 1;
+    if (tag[at] !== "=") continue;
+    at += 1;
+    while (at < tag.length && space.test(tag[at] as string)) at += 1;
+    const quote = tag[at];
+    if (quote === '"' || quote === "'") {
+      const close = tag.indexOf(quote, at + 1);
+      at = close === -1 ? tag.length : close + 1;
+    } else
+      while (at < tag.length && !/[\t\n\f\r >]/.test(tag[at] as string))
+        at += 1;
+  }
+  return names;
+}
+
+/** `<html data-lazurio-shell="host">` on the page's real `<html>` start tag,
+ * unless it has that attribute already; a page without one is left as it
+ * is. */
+function markShellHost(html: string): string {
+  const tag = htmlTags(html).find((item) => item.name === "html" && !item.end);
+  if (tag === undefined) return html;
+  if (
+    attributeNames(html.slice(tag.start, tag.stop)).includes(
+      "data-lazurio-shell",
+    )
+  )
+    return html;
+  const at = tag.start + "<html".length;
+  return `${html.slice(0, at)} data-lazurio-shell="host"${html.slice(at)}`;
+}
+
+const escapeAttribute = (value: string) =>
+  value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+/** Vite plugin: the DEV frame of a Module's app (decision 0249, addendum of
+ * 2026-11-22: DEV has a blue dashed frame with the label DEV, drawn by the
+ * overlay). It inserts only in a DEV run (`LAZURIO_RUNTIME_SHELL_SCRIPT`) and
+ * only while serving; a build, STAGING and PROD get nothing, also from a
+ * shared `vite.config.ts`. It inserts Lazurio's shell script and
+ * `<lazurio-buddy version="dev">` at the end of `<body>`, and marks `<html>`
+ * with `data-lazurio-shell="host"` so the shell does not read a shell
+ * document the dev server does not have. The frame, its colour and its text
+ * come only from the shell's element. A Module can leave the plugin out: it
+ * frames, it does not enforce. Use in `vite.config.ts`:
+ * `plugins: [react(), viteDevFramePlugin({ lang: "cs" })]`. */
+export function viteDevFramePlugin(
+  options: DevFrameOptions = {},
+  env: Environment = process.env,
+): {
+  name: string;
+  apply: "serve";
+  transformIndexHtml: {
+    order: "post";
+    handler: (html: string) => string;
+  };
+} {
+  devFrameOf(options, env);
+  return {
+    name: "lazurio-module-kit-dev-frame",
+    apply: "serve",
+    transformIndexHtml: {
+      order: "post",
+      // The page itself, not Vite's tags: Vite puts a body tag before the
+      // first literal `</body>`, also one inside a script.
+      handler: (html) => devFrameHtml(html, options, env),
+    },
+  };
+}
+
+/** The page with the DEV frame, as a string: what `bunDevFramePlugin`
+ * serves. The tags go before the page's real `</body>` (never one inside a
+ * script, a style, a comment or an attribute), or at the end of a page
+ * without one. Not a DEV run: the page is unchanged. */
+export function devFrameHtml(
+  html: string,
+  options: DevFrameOptions = {},
+  env: Environment = process.env,
+): string {
+  const frame = devFrameOf(options, env);
+  if (frame === null) return html;
+  const tags = devFrameTags(frame)
+    .map(({ tag, attrs }) => {
+      const list = Object.entries(attrs)
+        .map(([name, value]) => ` ${name}="${escapeAttribute(value)}"`)
+        .join("");
+      return `<${tag}${list}></${tag}>`;
+    })
+    .join("");
+  const marked = markShellHost(html);
+  const body = htmlTags(marked)
+    .filter((item) => item.name === "body" && item.end)
+    .at(-1);
+  return body === undefined
+    ? `${marked}${tags}`
+    : `${marked.slice(0, body.start)}${tags}${marked.slice(body.start)}`;
+}
+
+/** The subset of Bun's plugin builder the DEV frame needs. */
+export interface DevFramePluginBuild {
+  onLoad(
+    constraints: { filter: RegExp },
+    callback: (args: {
+      path: string;
+    }) => Promise<{ contents: string; loader: "html" }>,
+  ): unknown;
+}
+
+/** Bun plugin: the same DEV frame for an App whose development run bundles
+ * its page with Bun (`Bun.serve` with an HTML import, as the templates do).
+ * Register it in the App's `bunfig.toml`: `[serve.static] plugins =
+ * ["./dev-frame.ts"]`, where `dev-frame.ts` is `export default
+ * bunDevFramePlugin({ lang: "cs" })`. It changes nothing outside a DEV run,
+ * and a build served as files does not pass through it. */
+export function bunDevFramePlugin(
+  options: DevFrameOptions = {},
+  env: Environment = process.env,
+): {
+  name: string;
+  setup: (build: DevFramePluginBuild) => void;
+} {
+  devFrameOf(options, env);
+  return {
+    name: "lazurio-module-kit-dev-frame",
+    setup(build) {
+      build.onLoad({ filter: /\.html$/ }, async (args) => ({
+        contents: devFrameHtml(await Bun.file(args.path).text(), options, env),
+        loader: "html",
+      }));
+    },
   };
 }
 
